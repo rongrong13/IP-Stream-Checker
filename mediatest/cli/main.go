@@ -1,0 +1,577 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"flag"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"reflect"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	core "MediaUnlockTest/pkg/core"
+	m "MediaUnlockTest/pkg/providers"
+
+	"github.com/schollz/progressbar/v3"
+)
+
+var (
+	IPV4                     bool = true
+	IPV6                     bool = true
+	M                        bool
+	HK                       bool
+	TW                       bool
+	JP                       bool
+	KR                       bool
+	NA                       bool
+	SA                       bool
+	EU                       bool
+	AFR                      bool
+	SEA                      bool
+	OCEA                     bool
+	AI                       bool
+	Debug                    bool   = false
+	Conc                     uint64 = 0
+	Cache                    bool   = false
+	sem                      chan struct{}
+	ResultLines              []*result
+	bar                      *progressbar.ProgressBar
+	resultCache              = make(map[string]core.Result)
+	cacheMutex               sync.RWMutex
+	testTimeout              = 15 * time.Second
+	regionTimeout            = 3 * time.Minute
+	activeTestsMutex         sync.RWMutex
+	activeTests                   = make(map[string]bool)
+	ShowActive               bool = true
+	// JSON 模式: 供外部程序(subprocess)调用,输出结构化结果到 stdout
+	JSONOutput               bool   = false
+	// 指定要测试的服务名(逗号分隔,仅 JSON 模式生效; 空 = 全部)
+	Providers                string = ""
+	// 单个测试超时(秒),可被 -timeout 覆盖
+	TestTimeoutSec           int    = 15
+	progressDescriptionCache string
+	progressDescMu           sync.Mutex
+	updaterStopChan          chan struct{}
+	updaterMutex             sync.Mutex
+)
+
+type TestItem struct {
+	Name       string
+	Func       func(client http.Client) core.Result
+	SupportsV6 bool
+}
+
+type result struct {
+	Name    string
+	Divider bool
+	Value   core.Result
+}
+
+type regionItem struct {
+	Enabled bool
+	Name    string
+	Tests   []m.TestItem
+}
+
+func ReadSelect() {
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signalChan)
+
+	fmt.Println("请选择检测项目：")
+	fmt.Println(core.Green("直接按回车进行全部检测") + "，" + core.Yellow("按 Ctrl+C 取消检测") + "。")
+	fmt.Println("")
+	fmt.Println("[0]  : 　跨国平台")
+	fmt.Println("[1]  : 　台湾平台")
+	fmt.Println("[2]  : 　香港平台")
+	fmt.Println("[3]  : 　日本平台")
+	fmt.Println("[4]  : 　韩国平台")
+	fmt.Println("[5]  : 　北美平台")
+	fmt.Println("[6]  : 　南美平台")
+	fmt.Println("[7]  : 　欧洲平台")
+	fmt.Println("[8]  : 　非洲平台")
+	fmt.Println("[9]  : 东南亚平台")
+	fmt.Println("[10] : 大洋洲平台")
+	fmt.Println("[11] : 　ＡＩ平台")
+	fmt.Println("")
+	fmt.Print("请输入对应数字，空格分隔，回车确认: ")
+
+	inputChan := make(chan string, 1)
+
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			select {
+			case <-signalChan:
+				fmt.Println("")
+				fmt.Println(core.Yellow("输入中止，检测已取消。"))
+				os.Exit(0)
+			default:
+				if input, err := reader.ReadString('\n'); err == nil {
+					inputChan <- strings.TrimSpace(input)
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-signalChan:
+		fmt.Println("")
+		fmt.Println(core.Yellow("输入中止，检测已取消。"))
+		os.Exit(0)
+	case input := <-inputChan:
+		for c := range strings.SplitSeq(input, " ") {
+			switch c {
+			case "0":
+				M = true
+			case "1":
+				TW = true
+			case "2":
+				HK = true
+			case "3":
+				JP = true
+			case "4":
+				KR = true
+			case "5":
+				NA = true
+			case "6":
+				SA = true
+			case "7":
+				EU = true
+			case "8":
+				AFR = true
+			case "9":
+				SEA = true
+			case "10":
+				OCEA = true
+			case "11":
+				AI = true
+			default:
+				M, TW, HK, JP, KR, NA, SA, EU, AFR, SEA, OCEA, AI = true, true, true, true, true, true, true, true, true, true, true, true
+			}
+		}
+	}
+}
+
+func main() {
+	var (
+		Interface   string
+		DNSServers  string
+		HTTPProxy   string
+		SocksProxy  string
+		ShowVersion bool
+		CheckUpdate bool
+		NF          bool
+		TestMode    string
+		IPMode      int
+		IP4_1       string
+		IP6_1       string
+		IP4_2       string
+		IP6_2       string
+		err         error
+		IsProxy     bool
+		ForceUpdate bool
+		LogLevel    string
+		LogFile     string
+	)
+	flag.StringVar(&Interface, "I", "", "Source IP or network interface to use for connections")
+	flag.StringVar(&DNSServers, "dns-servers", "", "Custom DNS servers (format: ip:port)")
+	flag.StringVar(&HTTPProxy, "http-proxy", "", "HTTP proxy URL (format: http://user:pass@host:port)")
+	flag.StringVar(&SocksProxy, "socks-proxy", "", "SOCKS5 proxy URL (format: socks5://user:pass@host:port)")
+	flag.BoolVar(&ShowVersion, "v", false, "Show version information and exit")
+	flag.BoolVar(&CheckUpdate, "u", false, "Update to latest version")
+	flag.BoolVar(&ForceUpdate, "f", false, "Force update even if already on the latest version")
+	flag.BoolVar(&NF, "nf", false, "Only test Netflix availability")
+	flag.StringVar(&TestMode, "test", "", "Run in test mode for a specific provider (e.g., -test LiTV)")
+	flag.BoolVar(&Debug, "debug", false, "Enable debug mode for verbose output")
+	flag.IntVar(&IPMode, "m", 0, "Connection mode: 0=auto (default), 4=IPv4 only, 6=IPv6 only")
+	flag.Uint64Var(&Conc, "conc", 0, "Max concurrent tests (0=unlimited)")
+	flag.BoolVar(&ShowActive, "show-active", true, "Show active tests in progress bar (default: true)")
+	flag.BoolVar(&Cache, "cache", false, "Enable caching and sequential region execution (default: false)")
+	flag.StringVar(&LogLevel, "loglevel", "", "Log level (debug, info, warning, error). Only valid if -debug is enabled.")
+	flag.StringVar(&LogFile, "logfile", "", "Output log to file. Only valid if -debug is enabled.")
+	flag.BoolVar(&JSONOutput, "json", false, "Output results as JSON to stdout (for programmatic use)")
+	flag.StringVar(&Providers, "providers", "", "Comma-separated provider names to test (empty = all; only with -json)")
+	flag.IntVar(&TestTimeoutSec, "timeout", 15, "Per-test timeout in seconds (default: 15)")
+	flag.Parse()
+
+	// 用 -timeout 覆盖默认的单测试超时
+	if TestTimeoutSec > 0 {
+		testTimeout = time.Duration(TestTimeoutSec) * time.Second
+	}
+
+	// 提前应用代理设置,供 JSON 模式使用(main() 中后续逻辑也会使用)
+	if HTTPProxy != "" {
+		core.HTTPProxy = HTTPProxy
+	}
+	if SocksProxy != "" {
+		core.SocksProxy = SocksProxy
+	}
+
+	// JSON 模式: 供外部程序(subprocess)调用,跳过交互,直接输出结构化结果
+	if JSONOutput {
+		runJSONMode()
+		return
+	}
+
+	// -loglevel and -logfile are only effective when -debug is enabled
+	if !Debug {
+		LogLevel = ""
+		LogFile = ""
+	}
+	core.InitLogger(LogLevel, LogFile)
+
+	if ShowVersion {
+		fmt.Println(core.Version)
+		return
+	}
+	if CheckUpdate {
+		checkUpdate(ForceUpdate)
+		return
+	}
+	if Interface != "" {
+		if IP := net.ParseIP(Interface); IP != nil {
+			core.Dialer.LocalAddr = &net.TCPAddr{IP: IP}
+		} else {
+			core.Dialer.Control = func(network, address string, c syscall.RawConn) error {
+				return core.SetSocketOptions(network, address, c, Interface)
+			}
+		}
+	}
+	if DNSServers != "" {
+		core.Dialer.Resolver = &net.Resolver{
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "udp", DNSServers)
+			},
+		}
+		core.DNSServers = DNSServers
+	}
+	if HTTPProxy != "" {
+		core.HTTPProxy = HTTPProxy
+	}
+	if SocksProxy != "" {
+		core.SocksProxy = SocksProxy
+	}
+	core.InitClients()
+
+	if Conc > 0 {
+		sem = make(chan struct{}, Conc)
+	}
+
+	if NF {
+		fmt.Println("Netflix", ShowSingleResult(m.NetflixRegion(core.AutoHttpClient)))
+		return
+	}
+
+	if TestMode != "" {
+		allLists := [][]m.TestItem{
+			m.GlobeTests, m.TaiwanTests, m.HongKongTests, m.JapanTests,
+			m.KoreaTests, m.NorthAmericaTests, m.SouthAmericaTests,
+			m.EuropeTests, m.AfricaTests, m.SouthEastAsiaTests,
+			m.OceaniaTests, m.AITests,
+		}
+
+		testNames := strings.SplitSeq(TestMode, ",")
+		for targetName := range testNames {
+			targetName = strings.TrimSpace(targetName)
+			if targetName == "" {
+				continue
+			}
+			found := false
+			for _, list := range allLists {
+				for _, test := range list {
+					var shortFuncName string
+					if test.Func != nil {
+						funcName := runtime.FuncForPC(reflect.ValueOf(test.Func).Pointer()).Name()
+						parts := strings.Split(funcName, ".")
+						shortFuncName = parts[len(parts)-1]
+						shortFuncName = strings.TrimSuffix(shortFuncName, "-fm")
+					}
+
+					if strings.EqualFold(test.Name, targetName) || (shortFuncName != "" && strings.EqualFold(shortFuncName, targetName)) {
+						if test.Func != nil {
+							fmt.Println(test.Name, ShowSingleResult(test.Func(core.AutoHttpClient)))
+						} else {
+							fmt.Println(test.Name, "Test function is nil")
+						}
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				fmt.Println("Test", targetName, "not found")
+			}
+		}
+		return
+	}
+
+	fmt.Println("")
+	fmt.Println("[ 项目地址: " + core.SkyBlue("https://github.com/HsukqiLee/MediaUnlockTest") + " ]")
+	fmt.Println("[ 使用方式: " + core.Yellow("bash <(curl -Ls unlock.icmp.ing/scripts/test.sh)") + " ]")
+	fmt.Println()
+
+	if !Debug {
+		info4, err := core.GetDetailedIPInfo("https://unlock.icmp.ing/api/ip-info", 4)
+		if err != nil {
+			fmt.Println(core.Red("无法获取 IPv4 地址"))
+			IPV4 = false
+		} else {
+			IP4_2 = info4.IP
+			fmt.Println(core.SkyBlue("IPv4 地址：") + core.Green(info4.IP))
+			fmt.Println(core.SkyBlue("地区：") + core.Yellow(info4.Country) + core.SkyBlue(" / ") + core.Yellow(info4.Region) + core.SkyBlue(" / ") + core.Yellow(info4.City))
+			fmt.Println(core.SkyBlue("ISP：") + core.Green(info4.Organization) + core.Purple(" (AS"+strconv.Itoa(info4.ASN)+")"))
+			IPV4 = true
+		}
+		info6, err := core.GetDetailedIPInfo("https://unlock.icmp.ing/api/ip-info", 6)
+		if err != nil {
+			fmt.Println(core.Red("无法获取 IPv6 地址"))
+			IPV6 = false
+		} else {
+			IP6_2 = info6.IP
+			fmt.Println(core.SkyBlue("IPv6 地址：") + core.Green(info6.IP))
+			fmt.Println(core.SkyBlue("地区：") + core.Yellow(info6.Country) + core.SkyBlue(" / ") + core.Yellow(info6.Region) + core.SkyBlue(" / ") + core.Yellow(info6.City))
+			fmt.Println(core.SkyBlue("ISP：") + core.Green(info6.Organization) + core.Purple(" (AS"+strconv.Itoa(info6.ASN)+")"))
+			IPV6 = true
+		}
+	} else {
+		fmt.Println("[ 正在获取国内分流 IP... ]")
+		if IPMode == 0 || IPMode == 4 {
+			IP4_1, err = core.GetIPInfo("http://4.itdog.cn/", 4, "plain")
+			if err != nil {
+				if Debug {
+					fmt.Println(core.Red("无法获取国内分流 IPv4 地址 (") + core.Yellow(err.Error()) + core.Red(")"))
+				} else {
+					fmt.Println(core.Red("无法获取国内分流 IPv4 地址"))
+				}
+			} else {
+				fmt.Println(core.SkyBlue("IPv4 地址： ") + core.Green(IP4_1))
+			}
+		}
+		if IPMode == 0 || IPMode == 6 {
+			IP6_1, err = core.GetIPInfo("http://6.itdog.cn/", 6, "plain")
+			if err != nil {
+				if Debug {
+					fmt.Println(core.Red("无法获取国内分流 IPv6 地址 (") + core.Yellow(err.Error()) + core.Red(")"))
+				} else {
+					fmt.Println(core.Red("无法获取国内分流 IPv6 地址"))
+				}
+			} else {
+				fmt.Println(core.SkyBlue("IPv6 地址： ") + core.Green(IP6_1))
+			}
+		}
+		fmt.Println("")
+		fmt.Println("[ 正在获取国外分流 IP... ]")
+		if IPMode == 0 || IPMode == 4 {
+			info4, err := core.GetDetailedIPInfo("https://unlock.icmp.ing/api/ip-info", 4)
+			if err != nil {
+				if Debug {
+					fmt.Println(core.Red("无法获取国外 IPv4 地址 (") + core.Yellow(err.Error()) + core.Red(")"))
+				} else {
+					fmt.Println(core.Red("无法获取国外 IPv4 地址"))
+				}
+			} else {
+				IP4_2 = info4.IP
+				fmt.Println(core.SkyBlue("IPv4 地址：") + core.Green(info4.IP))
+				fmt.Println(core.SkyBlue("地区：") + core.Yellow(info4.Country) + core.SkyBlue("/") + core.Yellow(info4.Region) + core.SkyBlue("/") + core.Yellow(info4.City))
+				fmt.Println(core.SkyBlue("ISP：") + core.Green(info4.Organization) + core.Purple(" (AS"+strconv.Itoa(info4.ASN)+")"))
+			}
+		}
+		if IPMode == 0 || IPMode == 6 {
+			info6, err := core.GetDetailedIPInfo("https://unlock.icmp.ing/api/ip-info", 6)
+			if err != nil {
+				if Debug {
+					fmt.Println(core.Red("无法获取国外 IPv6 地址 (") + core.Yellow(err.Error()) + core.Red(")"))
+				} else {
+					fmt.Println(core.Red("无法获取国外 IPv6 地址"))
+				}
+			} else {
+				IP6_2 = info6.IP
+				fmt.Println(core.SkyBlue("IPv6 地址：") + core.Green(info6.IP))
+				fmt.Println(core.SkyBlue("地区：") + core.Yellow(info6.Country) + core.SkyBlue("/") + core.Yellow(info6.Region) + core.SkyBlue("/") + core.Yellow(info6.City))
+				fmt.Println(core.SkyBlue("ISP：") + core.Green(info6.Organization) + core.Purple(" (AS"+strconv.Itoa(info6.ASN)+")"))
+			}
+		}
+		fmt.Println("")
+		fmt.Println("[ 正在检测系统代理... ]")
+
+		if IPMode == 0 || IPMode == 4 {
+			IP4, err := core.GetIPInfo("https://www.cloudflare.com/cdn-cgi/trace", 4, "cloudflare")
+			if err != nil {
+				if IP4_1 != "" || IP4_2 != "" {
+					IsProxy = true
+					fmt.Println(core.Yellow("无法通过代理连接国际 IPv4 网络"))
+				} else {
+					IPV4 = false
+					fmt.Println(core.Red("无 IPv4 网络"))
+				}
+			} else {
+				IPV4 = true
+				if IP4_1 != IP4_2 || IP4_1 != IP4 {
+					IsProxy = true
+					fmt.Println(core.Yellow("正在使用代理 (IPv4)，出口 IP：") + core.Red(IP4))
+				} else if IP4 == IP4_1 {
+					fmt.Println(core.Green("未使用代理或使用了全局代理，且具有 IPv4 网络"))
+				} else {
+					fmt.Println(core.Red("存在 IPv4 网络，但出口 IP 异常"))
+					IPV4 = false
+					if IPMode == 4 {
+						IPV6 = false
+					}
+				}
+			}
+		}
+		if IPMode == 0 || IPMode == 6 {
+			IP6, err := core.GetIPInfo("https://www.cloudflare.com/cdn-cgi/trace", 6, "cloudflare")
+			if err != nil {
+				IPV6 = false
+				if IP6_1 != "" || IP6_2 != "" {
+					fmt.Println(core.Red("存在部分 IPv6 网络 (如国内)，但无法通过 IPv6 访问国际网络"))
+				} else {
+					fmt.Println(core.Red("无 IPv6 网络"))
+				}
+			} else {
+				IPV6 = true
+				if IP6_1 != IP6_2 && IP6_1 != IP6 {
+					IsProxy = true
+					fmt.Println(core.Yellow("正在使用代理 (IPv6)，出口 IP：") + core.Red(IP6))
+				} else if IP6 == IP6_1 {
+					fmt.Println(core.Green("未使用代理或使用了全局代理，且具有 IPv6 网络"))
+				} else {
+					fmt.Println(core.Red("存在 IPv6 网络，但出口 IP 异常"))
+					IPV6 = false
+					if IPMode == 6 {
+						IPV4 = false
+					}
+				}
+			}
+		}
+	}
+
+	if IsProxy {
+		fmt.Println(core.Yellow("提示：正在使用系统代理，此时连接行为全部受代理控制"))
+	}
+	if IPMode != 0 {
+		switch IPMode {
+		case 4:
+			IPV6 = false
+		case 6:
+			IPV4 = false
+		}
+	}
+	fmt.Println()
+
+	if IPV4 || IPV6 {
+		ReadSelect()
+	}
+	regions := []regionItem{
+		{Enabled: M, Name: "Globe", Tests: m.GlobeTests},
+		{Enabled: TW, Name: "Taiwan", Tests: m.TaiwanTests},
+		{Enabled: HK, Name: "HongKong", Tests: m.HongKongTests},
+		{Enabled: JP, Name: "Japan", Tests: m.JapanTests},
+		{Enabled: KR, Name: "Korea", Tests: m.KoreaTests},
+		{Enabled: NA, Name: "NorthAmerica", Tests: m.NorthAmericaTests},
+		{Enabled: SA, Name: "SouthAmerica", Tests: m.SouthAmericaTests},
+		{Enabled: EU, Name: "Europe", Tests: m.EuropeTests},
+		{Enabled: AFR, Name: "Africa", Tests: m.AfricaTests},
+		{Enabled: SEA, Name: "SouthEastAsia", Tests: m.SouthEastAsiaTests},
+		{Enabled: OCEA, Name: "Oceania", Tests: m.OceaniaTests},
+		{Enabled: AI, Name: "AI", Tests: m.AITests},
+	}
+	if IsProxy {
+		if Cache {
+			ExecuteTests(regions, core.AutoHttpClient, 0)
+		} else {
+			ExecuteTestsParallel(regions, core.AutoHttpClient, 0)
+		}
+	} else {
+		if IPV4 {
+			if Cache {
+				ExecuteTests(regions, core.Ipv4HttpClient, 4)
+			} else {
+				ExecuteTestsParallel(regions, core.Ipv4HttpClient, 4)
+			}
+		}
+		if IPV6 {
+			if Cache {
+				ExecuteTests(regions, core.Ipv6HttpClient, 6)
+			} else {
+				ExecuteTestsParallel(regions, core.Ipv6HttpClient, 6)
+			}
+		}
+	}
+	fmt.Println()
+	ShowFinalResult()
+	fmt.Println()
+	fmt.Println("检测完毕，感谢您的使用！")
+	ShowCounts()
+	fmt.Println()
+	ShowAD()
+	fmt.Println()
+	checkUpdateOnly()
+}
+
+// runJSONMode 以 JSON 模式运行: 供外部程序(subprocess)调用。
+// 跳过交互选择、banner、IP 信息获取等所有终端输出,直接把结构化结果写到 stdout。
+func runJSONMode() {
+	// 代理已在 main() 中提前写入 core.HTTPProxy / core.SocksProxy
+	core.InitClients()
+
+	if Conc > 0 {
+		sem = make(chan struct{}, Conc)
+	}
+
+	// 启用全部区域
+	regions := []regionItem{
+		{Enabled: true, Name: "Globe", Tests: m.GlobeTests},
+		{Enabled: true, Name: "Taiwan", Tests: m.TaiwanTests},
+		{Enabled: true, Name: "HongKong", Tests: m.HongKongTests},
+		{Enabled: true, Name: "Japan", Tests: m.JapanTests},
+		{Enabled: true, Name: "Korea", Tests: m.KoreaTests},
+		{Enabled: true, Name: "NorthAmerica", Tests: m.NorthAmericaTests},
+		{Enabled: true, Name: "SouthAmerica", Tests: m.SouthAmericaTests},
+		{Enabled: true, Name: "Europe", Tests: m.EuropeTests},
+		{Enabled: true, Name: "Africa", Tests: m.AfricaTests},
+		{Enabled: true, Name: "SouthEastAsia", Tests: m.SouthEastAsiaTests},
+		{Enabled: true, Name: "Oceania", Tests: m.OceaniaTests},
+		{Enabled: true, Name: "AI", Tests: m.AITests},
+	}
+
+	// 按 -providers 过滤(逗号分隔的服务名,不区分大小写)
+	if Providers != "" {
+		wanted := map[string]bool{}
+		for _, p := range strings.Split(Providers, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				wanted[strings.ToLower(p)] = true
+			}
+		}
+		for i := range regions {
+			var filtered []m.TestItem
+			for _, t := range regions[i].Tests {
+				if t.Func != nil && wanted[strings.ToLower(t.Name)] {
+					filtered = append(filtered, t)
+				}
+			}
+			regions[i].Tests = filtered
+		}
+	}
+
+	// 执行测试(通过 AutoHttpClient 走 -http-proxy 指定的代理)
+	ExecuteTestsParallel(regions, core.AutoHttpClient, 0)
+
+	// 输出 JSON 结果
+	ShowFinalResultJSON()
+}

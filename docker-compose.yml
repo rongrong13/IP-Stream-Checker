@@ -1,37 +1,13 @@
-# IP-Stream-Checker Docker Compose配置
-
-version: '3.8'
-
 services:
-  ip-stream-checker:
+  clash-checker:
     build: .
-    container_name: ip-stream-checker
+    image: clash-checker
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./config:/app/config
+      - ./data:/root/.config/mihomo/data
+      # - .:/app
     environment:
-      - CLASH_API_URL=http://clash:9090
-    depends_on:
-      - clash
-
-  clash:
-    image: sbingner/clash-meta:latest
-    container_name: clash
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./clash/config:/root/.config/clash
-      - ./clash/data:/root/.config/clash/data
-    command: >
-      -d /root/.config/clash
-      -f config.yaml
-      -ext-portal http://127.0.0.1:9090/ui
-    restart: unless-stopped
-
-volumes:
-  data:
-  logs:
-  config:
+      - TZ=Asia/Shanghai
+      - DATA_DIR=/root/.config/mihomo/data
+    restart: always

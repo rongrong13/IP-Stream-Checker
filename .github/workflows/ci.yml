@@ -1,0 +1,56 @@
+# IP-Stream-Checker CI
+# 推送或创建 Pull Request 时自动运行:
+#   1. Python 语法检查(防止提交无法运行的代码)
+#   2. 依赖安装验证
+#   3. Docker 镜像构建验证(含 Go 二进制编译)
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  python-check:
+    name: Python 语法与依赖检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Python 语法检查
+        run: |
+          python -m py_compile \
+            main.py \
+            core/checker_service.py \
+            core/config.py \
+            core/clash_api.py \
+            core/job_manager.py \
+            core/sources/base.py \
+            core/sources/ping0.py \
+            core/sources/ippure.py \
+            stream_tester/media_unlock.py
+
+      - name: 安装 Python 依赖
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: 核心模块导入检查
+        run: |
+          python -c "from core.config import config; print('config OK:', config.stream_test)"
+
+  docker-build:
+    name: Docker 镜像构建
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 构建镜像
+        run: docker compose build

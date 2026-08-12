@@ -1,0 +1,50 @@
+# 爬取任务队列最大值 一个订阅对应一个任务
+max_queue_size: 10  # 最大同时处理的任务数 (建议 5-20)
+
+# 缓存策略
+max_age: 360      # 缓存有效期 (秒), 0 表示不缓存 (每次都重新检测)
+
+
+# 过滤设置
+skip_keywords:
+  - "剩余"
+  - "重置"
+  - "到期"
+  - "有效期"
+  - "官网"
+  - "网址"
+  - "更新"
+  - "公告"
+  - "建议"
+
+# 网络请求超时时间 秒
+request_timeout: 15
+
+# 优先数据源 (ping0 或 ippure), 默认 ping0
+source: "ping0"
+
+# 是否允许降级 (True/False), 默认 True
+# True: 主源失败时尝试备用源
+fallback: true
+
+# 是否显示高级设置
+SHOW_ADVANCED_SETTINGS: false
+
+# 流媒体解锁检测 (整合 MediaUnlockTest)
+# 每个节点在完成 IP-risk 检测后,会通过同一代理自动测试以下服务的解锁情况
+stream_test:
+  enabled: true                    # 是否启用流媒体解锁检测
+  binary_path: /usr/local/bin/mediatest   # mediatest 二进制路径(由 Dockerfile 构建)
+  # 要测试的服务名(与 MediaUnlockTest 的服务名一致,逗号分隔)
+  # 常用: Netflix, Disney+, Youtube Premium, OpenAi ChatGPT, Anthropic Claude
+  # 留空 [] 表示检测全部服务(极慢,单个节点需数分钟)
+  providers:
+    - "Netflix"
+    - "Disney+"
+    - "Youtube Premium"
+    - "OpenAI ChatGPT"
+    - "Anthropic Claude"
+    - "Spotify Registration"
+  timeout: 90                      # 单节点流媒体检测超时(秒)
+  conc: 20                         # Go 侧并发数(并行测试多个服务)
+  node_label: true                 # 是否在节点名中追加解锁结果标注(如 🎬NF✓(US)·D+✗)

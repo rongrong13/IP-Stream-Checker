@@ -1,0 +1,17 @@
+# Dependabot 依赖自动更新与漏洞检测
+# GitHub 会定期检查依赖的新版本与已知安全漏洞,自动创建 PR
+
+version: 2
+updates:
+  # Python 依赖 (requirements.txt)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions 本身
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

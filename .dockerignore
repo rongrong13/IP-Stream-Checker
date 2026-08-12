@@ -1,0 +1,26 @@
+# IP-Stream-Checker Docker 构建忽略清单
+# 避免把本地无关文件复制进镜像(尤其 .git 和运行时数据)
+
+# 版本控制
+.git/
+.gitignore
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 运行时数据(订阅缓存、检测结果)
+data/
+logs/
+*.map
+*_checked.yaml
+test_results_*.json
+report_*.html
+report_*.txt
+
+# 本地开发文件
+.vscode/
+.idea/
+*.log
+*.tmp

@@ -1,0 +1,108 @@
+import os
+import yaml
+import logging
+
+# Defaults
+DEFAULT_CONFIG = {
+    "api_url": "http://127.0.0.1:9090",
+    "check_url": "https://my.123169.xyz/v1/info",
+    "request_timeout": 15,
+    "mixed_port": 7890,
+    "user_agent": "ClashVerge/2.4.3 Mihomo/1.19.17",
+    "skip_keywords": ["剩余", "到期", "有效期", "重置", "官网", "网址", "更新", "公告", "建议"],
+    "max_age": 3600, # 秒，缓存最大时间 超过这个时间会重新检查ip否则用缓存
+    "max_queue_size": 10, # 最大任务队列数
+}
+
+class Config:
+    def __init__(self):
+        self._config = DEFAULT_CONFIG.copy()
+        self.load()
+
+    def load(self):
+        # Allow overriding config path
+        config_path = os.getenv("CONFIG_PATH", "config.yaml")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    user_config = yaml.safe_load(f) or {}
+                    # Deep merge not strictly needed for this flat structure but good practice?
+                    # For now just update keys
+                    self._config.update(user_config)
+                    print(f"LOG: Loaded config from {config_path}", flush=True)
+            except Exception as e:
+                 print(f"LOG: Failed to load config: {e}. Using defaults.", flush=True)
+        else:
+             print(f"LOG: Config file {config_path} not found. Using defaults.", flush=True)
+
+    def get(self, key, default=None):
+        return self._config.get(key, default)
+
+    @property
+    def api_url(self): return self._config["api_url"]
+    
+    @property
+    def check_url(self): return self._config["check_url"]
+    
+    @property
+    def request_timeout(self): return self._config["request_timeout"]
+    
+    @property
+    def user_agent(self): return self._config["user_agent"]
+
+    @property
+    def max_queue_size(self): return self._config.get("max_queue_size", 10)
+    
+    @property
+    def skip_keywords(self): return self._config["skip_keywords"]
+    
+    @property
+    def max_age(self): return self._config["max_age"]
+
+    @property
+    def mixed_port(self): return self._config["mixed_port"]
+
+    @property
+    def source(self): return self._config.get("source", "ping0")
+
+    @property
+    def fallback(self): return self._config.get("fallback", True)
+
+    @property
+    def show_advanced_settings(self):
+        # Support both lowercase (standard) and uppercase (user input) keys, and Env Var (highest priority?)
+        # Let's say: Env Var > Config > Default
+        env_val = os.getenv("SHOW_ADVANCED_SETTINGS")
+        if env_val is not None:
+            return env_val.lower() == "true"
+            
+        # Check config (User put ALL CAPS in yaml)
+        if "SHOW_ADVANCED_SETTINGS" in self._config:
+            return bool(self._config["SHOW_ADVANCED_SETTINGS"])
+        
+        return self._config.get("show_advanced_settings", True)
+
+    @property
+    def stream_test(self) -> dict:
+        """流媒体解锁检测配置(整合 MediaUnlockTest)。
+
+        返回 dict:
+            enabled:     是否启用流媒体解锁检测
+            binary_path: mediatest 二进制路径
+            providers:   要测试的服务名列表(空 = 全部,极慢)
+            timeout:     单节点检测超时(秒)
+            conc:        Go 侧并发数
+            node_label:  是否在节点名中追加解锁结果标注
+        """
+        st = self._config.get("stream_test") or {}
+        return {
+            "enabled": bool(st.get("enabled", False)),
+            "binary_path": st.get("binary_path", "/usr/local/bin/mediatest"),
+            "providers": st.get("providers", ["Netflix", "Disney+", "Youtube Premium", "OpenAI ChatGPT"]),
+            "timeout": int(st.get("timeout", 90)),
+            "conc": int(st.get("conc", 20)),
+            "node_label": bool(st.get("node_label", True)),
+        }
+
+# Singleton instance
+config = Config()

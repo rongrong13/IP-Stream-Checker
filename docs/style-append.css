@@ -1,0 +1,63 @@
+/* Result Annotation Legend */
+.result-annotation-box {
+    background: var(--terminal-bg);
+    border: 1px dashed var(--card-border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    max-width: 600px;
+    margin: 0 auto 3rem;
+    text-align: center;
+}
+
+.annotation-format {
+    font-size: 1.1rem;
+    color: var(--text-primary);
+    margin-bottom: 1.5rem;
+    font-weight: 500;
+}
+
+.format-code {
+    font-family: var(--font-mono);
+    color: var(--accent-primary);
+    background: rgba(0, 255, 157, 0.1);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 0.95em;
+    margin-left: 0.5rem;
+}
+
+.annotation-details {
+    display: flex;
+    justify-content: center;
+    gap: 2rem;
+    flex-wrap: wrap;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+
+.detail-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.emoji-icon {
+    font-size: 1.1rem;
+}
+
+.text-icon {
+    background: rgba(255, 255, 255, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+}
+
+@media (max-width: 600px) {
+    .annotation-details {
+        flex-direction: column;
+        align-items: center;
+        /* Center items on mobile */
+        gap: 0.8rem;
+    }
+}
