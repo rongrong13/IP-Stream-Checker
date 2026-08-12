@@ -1,20 +1,26 @@
 # ============================================================
 # 阶段 1: 构建 MediaUnlockTest (Go) 二进制
+# 使用 BUILDPLATFORM(原生架构)运行,通过 GOARCH 交叉编译目标架构二进制,
+# 避免 QEMU 模拟编译(极慢)
 # ============================================================
-FROM golang:latest AS mediatest-builder
+FROM --platform=$BUILDPLATFORM golang:latest AS mediatest-builder
 
 WORKDIR /build
 # 使用国内 Go 模块代理(proxy.golang.org 在国内常无法访问)
 ENV GOPROXY=https://goproxy.cn,direct
 ENV CGO_ENABLED=0
+# 交叉编译目标平台参数(由 buildx 注入)
+ARG TARGETOS
+ARG TARGETARCH
 # 先复制 go.mod/go.sum 以利用 Docker 层缓存
 COPY mediatest/go.mod mediatest/go.sum ./
 RUN go mod download
 
 COPY mediatest/ .
 # 构建流媒体解锁检测工具(-json 模式由 cli/main.go 提供)
-RUN go build -ldflags="-s -w" -o /out/mediatest ./cli && \
-    /out/mediatest -v
+# 交叉编译产物无法在本机运行,仅在目标架构与本机一致时做版本验证
+RUN GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" go build -ldflags="-s -w" -o /out/mediatest ./cli && \
+    if [ "${TARGETARCH:-$(go env GOARCH)}" = "$(go env GOARCH)" ]; then /out/mediatest -v; fi
 
 # ============================================================
 # 阶段 2: Python 运行环境
@@ -42,8 +48,18 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Mihomo (Clash Meta)
-# Using a fixed release for stability. Adjust arch if needed (amd64 assumed)
-RUN curl -L -o clash.gz https://github.com/MetaCubeX/mihomo/releases/download/v1.19.18/mihomo-linux-amd64-v1.19.18.gz && \
+# 多架构支持: 优先使用 buildx 注入的 TARGETARCH,为空时用 uname -m 自动检测,
+# 兼容不支持 BuildKit 自动 ARG 的旧版 Docker
+ARG TARGETARCH
+RUN set -e; \
+    arch="${TARGETARCH:-$(uname -m)}"; \
+    case "$arch" in \
+      amd64|x86_64)  url="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.18/mihomo-linux-amd64-v1.19.18.gz" ;; \
+      arm64|aarch64) url="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.18/mihomo-linux-arm64-v1.19.18.gz" ;; \
+      arm|armv7*)    url="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.18/mihomo-linux-armv7-v1.19.18.gz" ;; \
+      *) echo "不支持的架构: $arch"; exit 1 ;; \
+    esac; \
+    curl -L -o clash.gz "$url" && \
     gunzip clash.gz && \
     chmod +x clash && \
     mv clash /usr/local/bin/clash
