@@ -31,7 +31,7 @@ PROVIDER_ABBR: Dict[str, str] = {
     "Youtube CDN": "YT-CDN",
     "OpenAI ChatGPT": "GPT",
     "Anthropic Claude": "Claude",
-    "Google Gemini": "Gemini",
+    "Google Gemini": "GM",
     "Microsoft Copilot": "Copilot",
     "Spotify Registration": "Spotify",
     "Amazon Prime Video": "Prime",
@@ -147,15 +147,18 @@ class MediaUnlockTester:
         return "✗"
 
     def format_summary(self, results: List[Dict[str, Any]]) -> str:
-        """把检测结果压缩为节点名标注用的短摘要。
+        """把检测结果压缩为节点名标注用的短摘要(只保留解锁成功的服务)。
 
-        例: " 🎬NF✓(US)·D+✗·GPT✓"
+        例: "GM✓(sg)·NF✓(us)·GPT✓" — 解锁失败(✗)的服务不显示。
         """
         if not results:
             return ""
         parts = []
         for item in results:
+            if item.get("status_text") != "ok":
+                # 只放解锁的,不放不解锁的
+                continue
             name = item.get("name", "?")
             abbr = self._abbr(name)
             parts.append(f"{abbr}{self._status_symbol(item)}")
-        return " 🎬" + "·".join(parts)
+        return "·".join(parts)

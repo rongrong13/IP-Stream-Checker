@@ -19,10 +19,61 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Job Manager Worker...")
     await job_manager.start_worker()
+    # 启动时清理一次过期的检测结果文件(按 result_retention_days)
+    try:
+        await asyncio.to_thread(cleanup_old_results)
+        asyncio.create_task(cleanup_loop())
+    except Exception as e:
+        print(f"[WARN] 初始化结果清理任务失败: {e}", flush=True)
     yield
     # Shutdown logic if needed
 
 app = FastAPI(lifespan=lifespan)
+
+
+def cleanup_old_results():
+    """清理超过 result_retention_days 天的结果文件与失效的历史记录。
+
+    结果文件存放在 DATA_DIR(挂载卷)中,按文件修改时间判断是否过期。
+    result_retention_days = 0 表示永久保留。
+    """
+    days = config.result_retention_days
+    if days <= 0:
+        return
+    cutoff = time.time() - days * 86400
+    removed_files = 0
+    try:
+        for fname in os.listdir(DATA_DIR):
+            if not fname.endswith(('.yaml', '.map')):
+                continue
+            fpath = os.path.join(DATA_DIR, fname)
+            try:
+                if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
+                    os.remove(fpath)
+                    removed_files += 1
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[WARN] 清理结果文件失败: {e}", flush=True)
+    # 移除历史记录中结果文件已不存在的条目
+    pruned = 0
+    try:
+        pruned = history_store.prune_missing_files()
+    except Exception as e:
+        print(f"[WARN] 清理历史记录失败: {e}", flush=True)
+    print(f"[CLEANUP] 已清理 {removed_files} 个过期结果文件、{pruned} 条失效历史(>{days}天)", flush=True)
+
+
+async def cleanup_loop():
+    """后台定时清理任务: 每 24 小时执行一次。"""
+    while True:
+        try:
+            await asyncio.sleep(86400)
+            await asyncio.to_thread(cleanup_old_results)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[WARN] 定时清理失败: {e}", flush=True)
 
 @app.get("/ipcheck")
 async def root():
@@ -49,6 +100,11 @@ api_url = os.getenv("CLASH_API_URL", "http://127.0.0.1:9090")
 # Initialized in main but logic moved
 checker_service = CheckerService(api_url=api_url) 
 job_manager = JobManager(checker_service)
+
+# 检测历史记录存储(Web 界面历史列表用, 最近 50 条)
+from core.history import init_history_store
+history_store = init_history_store(DATA_DIR, max_items=50)
+print(f"LOG: History store ready: {history_store.file_path}", flush=True)
 
 # Force standard logging...
 # ...
@@ -117,6 +173,150 @@ async def get_ui_config():
     """Exposes UI configuration based on environment variables or config.yaml."""
     return {"show_advanced_settings": config.show_advanced_settings}
 
+# ==================== 检测历史记录 API ====================
+
+@app.get("/api/history")
+async def get_history(limit: int = Query(50, description="返回条数上限")):
+    """返回最近的检测历史记录列表。"""
+    return {"records": history_store.list(limit=limit)}
+
+@app.get("/api/history/{md5}")
+async def get_history_detail(md5: str):
+    """按 md5 返回某条历史记录的检测结果(YAML 文本)。"""
+    record = history_store.get(md5)
+    if not record:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    file_path = record.get("file_path", "")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="结果文件已过期")
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return {
+        "md5": md5,
+        "url": record.get("url", ""),
+        "timestamp": record.get("timestamp", ""),
+        "node_count": record.get("node_count", 0),
+        "yaml": content,
+    }
+
+@app.delete("/api/history")
+async def clear_history():
+    """清空检测历史。"""
+    history_store.clear()
+    return {"status": "cleared"}
+
+# ==================== 设置读写 API(Web 界面设置面板用) ====================
+
+# Web 面板可选的流媒体服务(对应 MediaUnlockTest 服务名)
+AVAILABLE_STREAM_PROVIDERS = [
+    "Netflix", "Disney+", "Youtube Premium", "OpenAI ChatGPT", "Anthropic Claude",
+    "Google Gemini", "Microsoft Copilot", "DeepSeek", "Moonshot Kimi", "Perplexity AI",
+    "Spotify Registration", "Amazon Prime Video", "Hulu", "Max", "TikTok",
+    "Steam", "Dazn", "Reddit", "Apple", "Bing", "iQiYi", "TVBAnywhere+",
+]
+
+@app.get("/api/settings")
+async def get_settings():
+    """返回 Web 可配置的设置项(数据源、流媒体开关等)。"""
+    st = config.stream_test
+    return {
+        "source": config.source,                     # 数据源: ping0 / ippure
+        "fallback": config.fallback,                 # 主源失败降级
+        "request_timeout": config.request_timeout,   # IP 检测超时
+        "check_url": config.check_url,               # ippure 数据源 API 地址
+        "max_queue_size": config.max_queue_size,
+        "max_age": config.max_age,
+        "filter_risk_threshold": config.filter_risk_threshold,   # 风险节点过滤阈值
+        "result_retention_days": config.result_retention_days,   # 结果保留天数
+        "stream_test": {
+            "enabled": st["enabled"],
+            "providers": st["providers"],
+            "timeout": st["timeout"],
+            "conc": st["conc"],
+            "node_label": st["node_label"],
+        },
+        "available_providers": AVAILABLE_STREAM_PROVIDERS,
+    }
+
+@app.post("/api/settings")
+async def update_settings(request: Request):
+    """保存 Web 设置(写回 config.yaml + 更新内存,下次检测生效)。"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="无效的 JSON")
+
+    # 更新内存配置
+    if "source" in body and body["source"] in ("ping0", "ippure"):
+        config._config["source"] = body["source"]
+    if "fallback" in body and isinstance(body["fallback"], bool):
+        config._config["fallback"] = body["fallback"]
+    if "request_timeout" in body and isinstance(body["request_timeout"], int):
+        config._config["request_timeout"] = body["request_timeout"]
+    if "check_url" in body and isinstance(body["check_url"], str) and body["check_url"].strip():
+        config._config["check_url"] = body["check_url"].strip()
+
+    # 风险节点过滤阈值(风险度超过该值的节点从输出中移除, 0 = 不过滤)
+    if "filter_risk_threshold" in body:
+        try:
+            config._config["filter_risk_threshold"] = int(body["filter_risk_threshold"])
+        except (ValueError, TypeError):
+            pass
+
+    # 结果保留天数
+    if "result_retention_days" in body:
+        try:
+            config._config["result_retention_days"] = int(body["result_retention_days"])
+        except (ValueError, TypeError):
+            pass
+
+    # 流媒体检测设置
+    if "stream_test" in body and isinstance(body["stream_test"], dict):
+        st = body["stream_test"]
+        cur_st = config._config.get("stream_test") or {}
+        if "enabled" in st and isinstance(st["enabled"], bool):
+            cur_st["enabled"] = st["enabled"]
+        if "providers" in st and isinstance(st["providers"], list):
+            # 只保留合法服务名(避免注入任意值)
+            cur_st["providers"] = [p for p in st["providers"] if p in AVAILABLE_STREAM_PROVIDERS]
+        if "timeout" in st and isinstance(st["timeout"], int):
+            cur_st["timeout"] = st["timeout"]
+        if "conc" in st and isinstance(st["conc"], int):
+            cur_st["conc"] = st["conc"]
+        if "node_label" in st and isinstance(st["node_label"], bool):
+            cur_st["node_label"] = st["node_label"]
+        config._config["stream_test"] = cur_st
+
+        # 立即同步到 CheckerService 的流媒体检测器(下次检测生效,无需重启)
+        try:
+            if checker_service.stream_tester is not None:
+                checker_service.stream_tester.providers = cur_st.get("providers", [])
+                checker_service.stream_tester.timeout = int(cur_st.get("timeout", 90))
+                checker_service.stream_tester.conc = int(cur_st.get("conc", 20))
+                checker_service.stream_node_label = bool(cur_st.get("node_label", True))
+                # enabled=false 时置空检测器引用,跳过检测
+                if not cur_st.get("enabled", True):
+                    checker_service.stream_tester = None
+                elif checker_service.stream_tester is None:
+                    from stream_tester.media_unlock import MediaUnlockTester
+                    checker_service.stream_tester = MediaUnlockTester(
+                        binary_path=cur_st.get("binary_path", "/usr/local/bin/mediatest"),
+                        providers=cur_st.get("providers", []),
+                        timeout=int(cur_st.get("timeout", 90)),
+                        conc=int(cur_st.get("conc", 20)),
+                    )
+        except Exception as e:
+            print(f"[WARN] 同步流媒体配置失败: {e}", flush=True)
+
+    # 写回 config.yaml(持久化)
+    try:
+        with open("config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(config._config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        print(f"[WARN] 保存 config.yaml 失败: {e}", flush=True)
+
+    return {"status": "saved"}
+
 @app.get("/api/status")
 async def get_status_json(url: str = Query(..., description="Subscription URL")):
     """Internal JSON status API."""
@@ -145,6 +345,7 @@ async def ip_check(
     request_timeout: int = Query(None, description="Request timeout"),
     source: str = Query(None, description="Primary source (ping0/ippure)"),
     fallback: bool = Query(None, description="Fallback enabled"),
+    filter_risk_threshold: int = Query(None, description="风险度超过该值的节点将被移除(0=不过滤)"),
     request_id: str = Query(None, description="Unique Request ID to prevent race conditions")
 ): 
     try:
@@ -171,6 +372,7 @@ async def ip_check(
         if request_timeout is not None: options["request_timeout"] = request_timeout
         if source is not None: options["source"] = source
         if fallback is not None: options["fallback"] = fallback
+        if filter_risk_threshold is not None: options["filter_risk_threshold"] = filter_risk_threshold
 
         # Local limit overrides
         current_max_queue = max_queue_size if max_queue_size is not None else config.max_queue_size

@@ -1,5 +1,6 @@
 
 import asyncio
+import os
 import time
 from typing import Dict, List, Optional
 from core.checker_service import CheckerService
@@ -164,6 +165,22 @@ class JobManager:
                 
                 if not job.stop_event.is_set():
                     await job.complete()
+                    # 记录检测历史(Web 界面历史列表用)
+                    try:
+                        from core.history import get_history_store
+                        node_count = 0
+                        if os.path.exists(file_path):
+                            try:
+                                import yaml as _yaml
+                                with open(file_path, 'r', encoding='utf-8') as _f:
+                                    _data = _yaml.safe_load(_f) or {}
+                                node_count = len(_data.get('proxies', []))
+                            except Exception:
+                                pass
+                        md5 = os.path.splitext(os.path.basename(file_path))[0]
+                        get_history_store().add(md5, url, file_path, node_count)
+                    except Exception as _e:
+                        print(f"[WARN] 写入历史记录失败: {_e}", flush=True)
                 else:
                     print(f"[INFO] Job {url} finished (cancelled).", flush=True)
                 

@@ -104,5 +104,27 @@ class Config:
             "node_label": bool(st.get("node_label", True)),
         }
 
+    @property
+    def filter_risk_threshold(self) -> int:
+        """风险节点过滤阈值: 风险度(污染度)超过该值的节点从输出中移除。
+
+        0 = 不过滤。
+        """
+        try:
+            return int(self._config.get("filter_risk_threshold", 0))
+        except (ValueError, TypeError):
+            return 0
+
+    @property
+    def result_retention_days(self) -> int:
+        """检测结果本地保留天数(按天清理过期的结果文件与历史记录)。
+
+        0 = 永久保留。
+        """
+        try:
+            return int(self._config.get("result_retention_days", 7))
+        except (ValueError, TypeError):
+            return 7
+
 # Singleton instance
 config = Config()

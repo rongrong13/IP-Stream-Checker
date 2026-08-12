@@ -30,6 +30,14 @@ fallback: true
 # 是否显示高级设置
 SHOW_ADVANCED_SETTINGS: false
 
+# 风险节点过滤: 风险度(污染度)超过该值的节点会从输出订阅中移除(方便直接导入 OpenClash)
+# 0 = 不过滤
+filter_risk_threshold: 0
+
+# 检测结果本地保留天数: 超过该天数的结果文件与历史记录会自动清理
+# 0 = 永久保留
+result_retention_days: 7
+
 # 流媒体解锁检测 (整合 MediaUnlockTest)
 # 每个节点在完成 IP-risk 检测后,会通过同一代理自动测试以下服务的解锁情况
 stream_test:
@@ -44,6 +52,7 @@ stream_test:
     - "Youtube Premium"
     - "OpenAI ChatGPT"
     - "Anthropic Claude"
+    - "Google Gemini"
     - "Spotify Registration"
   timeout: 90                      # 单节点流媒体检测超时(秒)
   conc: 20                         # Go 侧并发数(并行测试多个服务)

@@ -1,876 +1,576 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Clash IP 纯净度检测</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-        }
-    </script>
-    <style>
-        .terminal-logs::-webkit-scrollbar {
-            width: 8px;
-        }
-
-        .terminal-logs::-webkit-scrollbar-track {
-            background: #f3f4f6;
-        }
-
-        .dark .terminal-logs::-webkit-scrollbar-track {
-            background: #1f2937;
-        }
-
-        .terminal-logs::-webkit-scrollbar-thumb {
-            background: #d1d5db;
-            border-radius: 4px;
-        }
-
-        .dark .terminal-logs::-webkit-scrollbar-thumb {
-            background: #4b5563;
-        }
-
-        .glass {
-            background: rgba(255, 255, 255, 0.8);
-            backdrop-filter: blur(10px);
-        }
-
-        .dark .glass {
-            background: rgba(30, 41, 59, 0.7);
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IP-Stream-Checker · 流媒体解锁与IP风险检测</title>
+<style>
+/* ============ 基础 ============ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel2: #1c2333;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --cyan: #58a6ff;
+  --purple: #bc8cff;
+}
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+/* ============ 彩虹工具 ============ */
+.rainbow-text {
+  background: linear-gradient(90deg, #ff6b6b, #ffd93d, #6bcb77, #4d96ff, #bc8cff, #ff6b6b);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: rainbow-flow 6s linear infinite;
+}
+@keyframes rainbow-flow {
+  0% { background-position: 0% 0; }
+  100% { background-position: 300% 0; }
+}
+.rainbow-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #ff6b6b, #ffd93d, #6bcb77, #4d96ff, #bc8cff);
+  background-size: 300% 100%;
+  transition: width .4s ease;
+  animation: rainbow-flow 3s linear infinite;
+}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 10px 22px; border: none; border-radius: 8px; cursor: pointer;
+  font-size: 14px; font-weight: 600; color: #fff; transition: transform .1s, opacity .2s;
+  background: linear-gradient(90deg, #ff6b6b, #ffd93d 30%, #6bcb77 60%, #4d96ff);
+  background-size: 200% 100%;
+}
+.btn:hover { opacity: .9; transform: translateY(-1px); }
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn-danger { background: linear-gradient(90deg, #f85149, #d29922); }
+.btn-ghost {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+}
+.btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+/* ============ 布局 ============ */
+.container { max-width: 1280px; margin: 0 auto; padding: 16px; }
+header { text-align: center; padding: 26px 0 18px; }
+header h1 { font-size: 30px; letter-spacing: 2px; }
+header p { color: var(--muted); margin-top: 4px; }
+main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+.panel {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px; margin-bottom: 16px;
+}
+.panel-title {
+  font-size: 13px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+/* ============ 输入区 ============ */
+.input-row { display: flex; gap: 10px; }
+.input-row input {
+  flex: 1; padding: 11px 14px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--panel2); color: var(--text); font-size: 14px; outline: none;
+}
+.input-row input:focus { border-color: var(--cyan); }
+/* ============ 设置面板 ============ */
+details.settings { margin-top: 14px; }
+details.settings summary {
+  cursor: pointer; color: var(--cyan); font-size: 13px; user-select: none;
+  padding: 6px 0;
+}
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; margin-top: 10px; }
+@media (max-width: 600px) { .settings-grid { grid-template-columns: 1fr; } }
+.field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.field input, .field select {
+  width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--panel2); color: var(--text); font-size: 13px; outline: none;
+}
+.field input[type="checkbox"] { width: auto; margin-right: 6px; }
+.field.check-line { display: flex; align-items: center; gap: 6px; }
+.check-line label { margin: 0; }
+.providers-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px;
+  margin-top: 8px;
+}
+.providers-grid label {
+  display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+  border: 1px solid var(--border); border-radius: 6px; font-size: 12px; cursor: pointer;
+  color: var(--muted);
+}
+.providers-grid label.checked { color: var(--text); border-color: var(--green); background: rgba(63,185,80,.08); }
+.providers-grid input { accent-color: var(--green); }
+/* ============ 状态与进度 ============ */
+.status-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.badge {
+  padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700;
+  background: var(--panel2); border: 1px solid var(--border); color: var(--muted);
+}
+.badge.running { color: var(--cyan); border-color: var(--cyan); animation: pulse 1.5s infinite; }
+.badge.done { color: var(--green); border-color: var(--green); }
+.badge.error { color: var(--red); border-color: var(--red); }
+.badge.cancelled { color: var(--yellow); border-color: var(--yellow); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+.progress-wrap { background: var(--panel2); border-radius: 3px; height: 6px; overflow: hidden; flex: 1; }
+.progress-text { font-size: 12px; color: var(--muted); min-width: 70px; text-align: right; }
+/* ============ 日志终端 ============ */
+.log-window {
+  background: #010409; border: 1px solid var(--border); border-radius: 8px;
+  height: 420px; overflow-y: auto; padding: 10px 12px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace; font-size: 12px;
+}
+.log-window::-webkit-scrollbar { width: 8px; }
+.log-window::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.log-line { padding: 2px 0; word-break: break-all; color: var(--muted); }
+.log-line .t { color: #484f58; margin-right: 8px; }
+.log-line.info { color: var(--muted); }
+.log-line.checking { color: var(--cyan); }
+.log-line.result { color: var(--green); border-left: 3px solid var(--green); padding-left: 8px; margin: 3px 0; background: rgba(63,185,80,.06); }
+.log-line.cancelled { color: var(--yellow); border-left: 3px solid var(--yellow); padding-left: 8px; }
+.log-line.error { color: var(--red); border-left: 3px solid var(--red); padding-left: 8px; font-weight: 600; }
+.log-line.rainbow { background: linear-gradient(90deg, rgba(255,107,107,.15), rgba(255,217,61,.15), rgba(107,203,119,.15), rgba(77,150,255,.15)); }
+/* ============ 完成区 ============ */
+.result-row { display: flex; gap: 8px; margin-top: 12px; }
+.result-row input {
+  flex: 1; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--panel2); color: var(--green); font-size: 12px; outline: none;
+}
+/* ============ 历史 ============ */
+.history-list { max-height: 460px; overflow-y: auto; }
+.history-item {
+  padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 8px; cursor: pointer; transition: border-color .2s, background .2s;
+}
+.history-item:hover, .history-item.active { border-color: var(--cyan); background: rgba(88,166,255,.06); }
+.history-item .url { font-size: 12px; color: var(--text); word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.history-item .meta { font-size: 11px; color: var(--muted); margin-top: 3px; display: flex; justify-content: space-between; }
+.history-empty { color: var(--muted); text-align: center; padding: 30px 0; font-size: 13px; }
+.history-detail { margin-top: 10px; }
+.history-detail pre {
+  background: #010409; border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px; font-size: 11px; max-height: 300px; overflow: auto;
+  white-space: pre-wrap; word-break: break-all; color: var(--green);
+}
+footer { text-align: center; color: #30363d; padding: 20px 0; font-size: 12px; }
+</style>
 </head>
+<body>
+<div class="container">
+  <!-- 头部 -->
+  <header>
+    <h1 class="rainbow-text">⚡ IP-Stream-Checker</h1>
+    <p>流媒体解锁检测 + IP 风险检测 · 自动标注节点质量</p>
+  </header>
 
-<body
-    class="bg-gray-50 dark:bg-[#0d1117] text-gray-900 dark:text-white min-h-screen flex flex-col items-center pt-24 px-4 font-sans transition-colors duration-300">
-
-    <!-- Navbar -->
-    <nav
-        class="fixed top-0 left-0 right-0 z-50 glass border-b border-gray-200 dark:border-gray-800 transition-colors duration-300">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-16">
-                <!-- Left: Logo & Badge -->
-                <div class="flex items-center space-x-4">
-                    <a href="https://tombcato.github.io/clash-ip-checker/" target="_blank"
-                        class="flex items-center space-x-2 hover:opacity-80 transition-opacity">
-                        <div class="text-orange-500">
-                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-                                <path fill-rule="evenodd"
-                                    d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"
-                                    clip-rule="evenodd" />
-                            </svg>
-                        </div>
-                        <span class="text-xl font-bold tracking-tight whitespace-nowrap">
-                            <span class="text-green-600 dark:text-green-400">Clash</span> <span
-                                class="text-gray-900 dark:text-white">IP Checker</span>
-                        </span>
-                    </a>
-
-                    <div
-                        class="hidden md:inline-flex items-center px-3 py-1 rounded-full border border-blue-500/20 bg-blue-50/50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300 text-xs font-bold shadow-sm backdrop-blur-sm">
-                        <span class="flex h-2 w-2 relative mr-2">
-                            <span
-                                class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                            <span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                        </span>
-                        DOCKER DEMO
-                    </div>
-                </div>
-
-                <!-- Right: Icons -->
-                <div class="flex items-center space-x-4">
-                    <!-- Theme Toggle -->
-                    <button id="theme-btn" onclick="toggleTheme()"
-                        class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">
-                        <!-- Sun Icon (Hidden by default in dark, shown in light? Logic handled by JS swapping InnerHTML usually, or simpler CSS display) -->
-                        <!-- Let's use JS to inject the right SVG -->
-                        <svg id="theme-icon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <!-- Default to Moon -->
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z">
-                            </path>
-                        </svg>
-                    </button>
-
-                    <!-- X / Twitter -->
-                    <a href="https://twitter.com" target="_blank"
-                        class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">
-                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                            <path
-                                d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                        </svg>
-                    </a>
-
-                    <!-- GitHub Star -->
-                    <a href="https://github.com/tombcato/clash-ip-checker" target="_blank"
-                        class="flex items-center space-x-1 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 border border-gray-300 dark:border-gray-700 rounded-md px-3 py-1 transition-colors text-sm text-gray-700 dark:text-gray-300">
-                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                            <path fill-rule="evenodd" clip-rule="evenodd"
-                                d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
-                        </svg>
-                        <span class="font-semibold">Star</span>
-                        <span id="github-star-count"
-                            class="bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 rounded text-xs ml-2">...</span>
-                    </a>
-                </div>
-            </div>
+  <main>
+    <!-- 左: 历史记录 -->
+    <aside>
+      <div class="panel">
+        <div class="panel-title">
+          <span>📋 检测历史</span>
+          <button class="btn btn-ghost" onclick="loadHistory()" style="padding:2px 10px;font-size:11px;">刷新</button>
         </div>
-    </nav>
-
-    <!-- Spacer for fixed header -->
-    <div class="h-8"></div>
-
-
-
-    <!-- Main Input Card -->
-    <div
-        class="w-full max-w-3xl glass border border-gray-200 dark:border-gray-700 rounded-2xl shadow-xl p-8 mb-8 transition-all hover:border-blue-400 dark:hover:border-gray-600">
-        <div class="flex flex-col space-y-4">
-            <label for="url-input"
-                class="text-sm font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">订阅地址
-                (Subscription URL)</label>
-            <div class="flex space-x-4">
-                <input type="text" id="url-input" placeholder="请在此粘贴您的订阅链接 (http://...)"
-                    class="flex-1 bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl px-4 py-3 text-gray-900 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all placeholder-gray-500 dark:placeholder-gray-600">
-                <button id="check-btn" onclick="startCheck()"
-                    class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-xl transition-transform transform active:scale-95 shadow-lg shadow-blue-500/30 dark:shadow-blue-900/50 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none">
-                    开始检测
-                </button>
-                <button id="stop-btn" onclick="stopCheck()"
-                    class="hidden bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-8 rounded-xl transition-transform transform active:scale-95 shadow-lg shadow-red-500/30 dark:shadow-red-900/50">
-                    停止
-                </button>
-            </div>
-
-            <!-- Advanced Settings Toggle -->
-            <div class="pt-2" id="advanced-settings-container">
-                <button type="button" onclick="toggleSettings()"
-                    class="flex items-center text-xs text-gray-500 dark:text-gray-400 hover:text-blue-500 focus:outline-none">
-                    <svg id="settings-icon" class="w-4 h-4 mr-1 transform transition-transform" fill="none"
-                        stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                    </svg>
-                    高级设置 (Advanced Settings)
-                </button>
-                <div id="settings-panel"
-                    class="hidden mt-3 p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-
-                    <!-- Source Selection -->
-                    <div class="flex flex-col space-y-1">
-                        <label class="text-gray-600 dark:text-gray-400 font-semibold">检测源 (Source)</label>
-                        <select id="setting-source"
-                            class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none">
-                            <option value="ping0" selected>Ping0 (Default)</option>
-                            <option value="ippure">IPPure</option>
-                        </select>
-                    </div>
-
-                    <!-- Fallback Toggle -->
-                    <div class="flex flex-col space-y-1">
-                        <label class="text-gray-600 dark:text-gray-400 font-semibold">自动降级 (Fallback)</label>
-                        <div class="flex items-center h-full">
-                            <input type="checkbox" id="setting-fallback"
-                                class="w-4 h-4 text-blue-600 rounded bg-gray-100 border-gray-300 dark:bg-gray-700 dark:border-gray-600 focus:ring-blue-500"
-                                checked>
-                            <span class="ml-2 text-gray-500 text-xs">主源失败时尝试备用源</span>
-                        </div>
-                    </div>
-
-                    <!-- Skip Keywords -->
-                    <div class="flex flex-col space-y-1 md:col-span-2">
-                        <label class="text-gray-600 dark:text-gray-400 font-semibold">跳过关键词 (包含关键词的节点将被跳过)</label>
-                        <input type="text" id="setting-skip" placeholder="剩余,重置,到期,有效期..."
-                            value="剩余,重置,到期,有效期,官网,网址,更新,公告,建议"
-                            class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none">
-                    </div>
-
-                    <!-- Max Age -->
-                    <div class="flex flex-col space-y-1">
-                        <label class="text-gray-600 dark:text-gray-400 font-semibold">缓存时间（只返回缓存结果）</label>
-                        <input type="number" id="setting-max-age" value="3600" min="0"
-                            class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none">
-                    </div>
-
-                    <!-- Timeout -->
-                    <div class="flex flex-col space-y-1">
-                        <label class="text-gray-600 dark:text-gray-400 font-semibold">请求超时 (每个节点检测最大时间)</label>
-                        <input type="number" id="setting-timeout" value="15" min="1" max="60"
-                            class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 focus:ring-1 focus:ring-blue-500 outline-none">
-                    </div>
-
-                </div>
-            </div>
-
-            <p id="error-msg" class="text-red-500 dark:text-red-400 text-sm hidden"></p>
+        <div id="history-list" class="history-list">
+          <div class="history-empty">暂无记录</div>
         </div>
-    </div>
+        <div id="history-detail" class="history-detail" style="display:none;"></div>
+      </div>
+    </aside>
 
-    <!-- Live Status Panel (Hidden by default) -->
-    <div id="status-panel" class="w-full max-w-3xl hidden space-y-6">
-        <!-- Status Header -->
-        <div
-            class="flex justify-between items-center bg-white dark:bg-gray-800 rounded-lg p-4 border-l-4 border-blue-500 shadow-sm">
-            <div>
-                <h3 class="font-bold text-gray-800 dark:text-gray-200">当前任务</h3>
-                <p id="task-url" class="text-xs text-gray-500 truncate max-w-md">...</p>
-            </div>
-            <span id="status-badge"
-                class="px-3 py-1 rounded text-xs font-bold bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300">等待中</span>
+    <!-- 右: 主操作区 -->
+    <section>
+      <!-- 输入区 -->
+      <div class="panel">
+        <div class="input-row">
+          <input id="sub-url" type="text" placeholder="粘贴 Clash 订阅链接 (https://...)" />
+          <button id="check-btn" class="btn" onclick="startCheck()">开始检测</button>
+          <button id="stop-btn" class="btn btn-danger" onclick="stopCheck()" style="display:none;">停止</button>
         </div>
 
-        <!-- Queue Alert -->
-        <div id="queue-box"
-            class="hidden bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4 flex items-center space-x-3">
-            <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-yellow-500"></div>
-            <div class="text-yellow-700 dark:text-yellow-200 text-sm">
-                <strong>排队中</strong>: <span id="queue-msg">...</span>
+        <!-- 设置面板 -->
+        <details class="settings" id="settings-panel">
+          <summary>⚙️ 检测设置(数据源 · 流媒体服务开关)</summary>
+          <div class="settings-grid">
+            <div class="field">
+              <label>IP 检测数据源</label>
+              <select id="setting-source">
+                <option value="ping0">Ping0</option>
+                <option value="ippure">IPPure</option>
+              </select>
             </div>
+            <div class="field check-line">
+              <label style="margin:0;white-space:nowrap;">主源失败降级</label>
+              <input type="checkbox" id="setting-fallback" checked />
+            </div>
+            <div class="field">
+              <label>IP 检测超时(秒)</label>
+              <input type="number" id="setting-timeout" value="15" min="5" max="60" />
+            </div>
+            <div class="field">
+              <label>IPPure API 地址</label>
+              <input type="text" id="setting-check-url" placeholder="https://..." />
+            </div>
+            <div class="field">
+              <label>缓存有效期(秒, 0=不缓存)</label>
+              <input type="number" id="setting-max-age" value="360" min="0" />
+            </div>
+            <div class="field">
+              <label>队列上限</label>
+              <input type="number" id="setting-max-queue" value="10" min="1" max="50" />
+            </div>
+            <div class="field">
+              <label>去除风险度高于 % 的节点(0=不过滤)</label>
+              <input type="number" id="setting-risk-filter" value="0" min="0" max="100" />
+            </div>
+            <div class="field">
+              <label>结果保留天数(0=永久)</label>
+              <input type="number" id="setting-retention" value="7" min="0" max="365" />
+            </div>
+            <div class="field check-line">
+              <label style="margin:0;white-space:nowrap;">启用流媒体解锁检测</label>
+              <input type="checkbox" id="setting-stream-enabled" checked />
+            </div>
+            <div class="field">
+              <label>流媒体检测超时(秒)</label>
+              <input type="number" id="setting-stream-timeout" value="90" min="30" max="600" />
+            </div>
+          </div>
+          <div style="margin-top:10px;">
+            <label style="font-size:12px;color:var(--muted);">🎬 流媒体解锁检测服务(勾选需要检测的):</label>
+            <div id="providers-grid" class="providers-grid"><!-- 动态生成 --></div>
+          </div>
+          <div style="margin-top:12px;">
+            <button class="btn" onclick="saveSettings()">💾 保存设置</button>
+            <span id="save-tip" style="margin-left:10px;font-size:12px;color:var(--green);"></span>
+          </div>
+        </details>
+      </div>
+
+      <!-- 状态 -->
+      <div class="panel">
+        <div class="status-row">
+          <span id="status-badge" class="badge">空闲</span>
+          <div class="progress-wrap"><div id="progress-bar" class="rainbow-bar" style="width:0%;"></div></div>
+          <span id="progress-text" class="progress-text">0 / 0</span>
         </div>
-
-        <!-- Progress Log -->
-        <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden shadow-inner">
-            <div class="bg-gray-800 px-4 py-2 flex justify-between items-center text-xs text-gray-400">
-                <span>终端输出日志</span>
-                <span id="progress-text">0 / 0</span>
-            </div>
-            <div id="progress-bar-container" class="h-1 bg-gray-700 w-full">
-                <div id="progress-bar" class="h-full bg-blue-500 w-0 transition-all duration-300"></div>
-            </div>
-            <div id="log-window"
-                class="terminal-logs h-64 overflow-y-auto p-4 font-mono text-sm space-y-1 text-gray-300">
-                <!-- Logs here -->
-            </div>
+        <div id="log-window" class="log-window">
+          <div class="log-line info"><span class="t"></span>👋 输入订阅链接,点击"开始检测"。</div>
         </div>
-
-        <!-- Action Area -->
-        <div id="action-area" class="text-center hidden space-y-4">
-
-            <!-- Result Link Box -->
-            <div
-                class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 flex flex-col space-y-2 shadow-sm">
-                <!-- Warning Message -->
-                <div
-                    class="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700/50 rounded p-2 mb-2 text-left">
-                    <p class="text-xs text-red-700 dark:text-red-300 leading-relaxed font-bold">
-                        ⚠️ 警告：这是 demo 功能只是作为 docker 版本演示，可能随时暂停！订阅链接就会失效，请下载修改后的 yaml 或部署自己的 docker 服务获取链接导入使用。
-                    </p>
-                </div>
-
-                <label for="result-url"
-                    class="text-sm font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider self-start">新的带检测结果标注的订阅链接</label>
-                <div class="flex space-x-3 w-full">
-                    <input id="result-url" type="text" readonly onclick="this.select()"
-                        class="w-full bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl px-4 py-3 text-sm text-blue-600 dark:text-blue-300 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all placeholder-gray-500 dark:placeholder-gray-600">
-                </div>
-            </div>
-
-            <div class="flex justify-center space-x-4">
-                <a id="download-btn" href="#" target="_blank"
-                    class="inline-flex items-center space-x-2 px-6 py-3 bg-green-600 hover:bg-green-500 rounded-xl text-white font-bold transition-all shadow-lg shadow-green-500/30 dark:shadow-green-900/50">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                    </svg>
-                    <span>下载yaml配置文件</span>
-                </a>
-                <button onclick="resetView()"
-                    class="text-gray-500 hover:text-gray-800 dark:hover:text-white underline text-sm">检测其他</button>
-            </div>
+        <!-- 完成区 -->
+        <div id="result-row" class="result-row" style="display:none;">
+          <input id="result-url" type="text" readonly />
+          <button class="btn btn-ghost" onclick="copyResult()">复制</button>
+          <a id="download-btn" class="btn btn-ghost" style="text-decoration:none;" target="_blank">下载</a>
         </div>
-    </div>
-
-    <script>
-        const statusPanel = document.getElementById('status-panel');
-        const urlInput = document.getElementById('url-input');
-        // ... (existing vars) ...
-        const checkBtn = document.getElementById('check-btn');
-        const errorMsg = document.getElementById('error-msg');
-        const logWindow = document.getElementById('log-window');
-        const progressBar = document.getElementById('progress-bar');
-        const progressText = document.getElementById('progress-text');
-        const statusBadge = document.getElementById('status-badge');
-        const queueBox = document.getElementById('queue-box');
-        const queueMsg = document.getElementById('queue-msg');
-        const taskUrlDisplay = document.getElementById('task-url');
-        const downloadBtn = document.getElementById('download-btn');
-        const actionArea = document.getElementById('action-area');
-
-        // --- Theme Logic ---
-        function initTheme() {
-            if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-                document.documentElement.classList.add('dark');
-            } else {
-                document.documentElement.classList.remove('dark');
-            }
-            updateThemeIcon();
-        }
-
-        function toggleTheme() {
-            if (document.documentElement.classList.contains('dark')) {
-                document.documentElement.classList.remove('dark');
-                localStorage.theme = 'light';
-            } else {
-                document.documentElement.classList.add('dark');
-                localStorage.theme = 'dark';
-            }
-            updateThemeIcon();
-        }
-
-        function updateThemeIcon() {
-            const isDark = document.documentElement.classList.contains('dark');
-            const svg = document.getElementById('theme-icon');
-            if (!svg) return;
-
-            if (isDark) {
-                // Moon
-                svg.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>';
-            } else {
-                // Sun
-                svg.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path>';
-            }
-        }
-
-        // Initialize immediately
-        initTheme();
-        initConfig(); // Fetch UI config
-
-        // Wait for load to ensure DOM is ready
-        window.addEventListener('load', fetchGitHubStars);
-
-        async function initConfig() {
-            try {
-                const res = await fetch('/api/config');
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.show_advanced_settings === false) {
-                        const container = document.getElementById('advanced-settings-container');
-                        if (container) container.classList.add('hidden');
-                    }
-                }
-            } catch (e) {
-                console.log("Config fetch failed, using defaults");
-            }
-        }
-
-
-        function fetchGitHubStars() {
-            const cacheKey = 'github_stars';
-            const cacheTimeKey = 'github_stars_time';
-            const cacheDuration = 3600 * 1000; // 1 hour
-
-            const cached = localStorage.getItem(cacheKey);
-            const cachedTime = localStorage.getItem(cacheTimeKey);
-
-            if (cached && cachedTime && (Date.now() - cachedTime < cacheDuration)) {
-                document.getElementById('github-star-count').innerText = cached;
-                return;
-            }
-
-            fetch('https://api.github.com/repos/tombcato/clash-ip-checker')
-                .then(response => {
-                    if (!response.ok) throw new Error("Rate Limit or Network Error");
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.stargazers_count) {
-                        const stars = data.stargazers_count;
-                        document.getElementById('github-star-count').innerText = stars;
-                        localStorage.setItem(cacheKey, stars);
-                        localStorage.setItem(cacheTimeKey, Date.now());
-                    }
-                })
-                .catch(err => {
-                    console.log("Star fetch skipped:", err);
-                    // Fallback to cache or hardcoded estimate if rate limited
-                    if (cached) document.getElementById('github-star-count').innerText = cached;
-                    else document.getElementById('github-star-count').innerText = "700+";
-                });
-        }
-
-        let evtSource = null;
-
-        // Restore active task from local storage on load
-        window.addEventListener('load', () => {
-            const lastUrl = localStorage.getItem('active_task_url');
-            if (lastUrl) {
-                // Check if it's actually running or done?
-                // Just restore view and connect stream. The stream will tell us if it's done.
-                showStatusView(lastUrl);
-                connectStream(lastUrl);
-            }
-        });
-
-
-        function toggleSettings() {
-            const panel = document.getElementById('settings-panel');
-            const icon = document.getElementById('settings-icon');
-            if (panel.classList.contains('hidden')) {
-                panel.classList.remove('hidden');
-                icon.style.transform = "rotate(180deg)";
-            } else {
-                panel.classList.add('hidden');
-                icon.style.transform = "rotate(0deg)";
-            }
-        }
-
-        function generateUUID() {
-            // Native support (HTTPS/Localhost)
-            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-                return crypto.randomUUID();
-            }
-            // Fallback for HTTP (Math.random)
-            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-                return v.toString(16);
-            });
-        }
-
-        async function startCheck() {
-            if (checkBtn.disabled) return;
-
-            const url = urlInput.value.trim();
-            if (!url) return showError("请输入有效的订阅链接");
-
-            errorMsg.classList.add('hidden');
-            actionArea.classList.add('hidden'); // Clear previous results
-            logWindow.innerHTML = ''; // Clear logs explicitly to prevent confusion
-            checkBtn.disabled = true;
-            checkBtn.innerHTML = '<svg class="animate-spin -ml-1 mr-2 h-5 w-5 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> 请求中...';
-
-            // Generate Request ID to prevent race conditions (cancel affecting new job)
-            const requestId = generateUUID();
-            localStorage.setItem('active_task_id', requestId);
-
-            // Gather Settings (Add checks since they might be hidden/null)
-            const sourceEl = document.getElementById('setting-source');
-            const fallbackEl = document.getElementById('setting-fallback');
-            const skipEl = document.getElementById('setting-skip');
-            const maxAgeEl = document.getElementById('setting-max-age');
-            const timeoutEl = document.getElementById('setting-timeout');
-
-            const source = sourceEl ? sourceEl.value : "ping0";
-            const fallback = fallbackEl ? fallbackEl.checked : true;
-            const skip = skipEl ? skipEl.value.trim() : "剩余,重置,到期,有效期,官网,网址,更新,公告,建议";
-            const maxAge = maxAgeEl ? maxAgeEl.value : 3600;
-            const timeout = timeoutEl ? timeoutEl.value : 15;
-
-            // Build Query Params
-            const params = new URLSearchParams();
-            params.append("url", url);
-            params.append("request_id", requestId);
-            params.append("source", source);
-            params.append("fallback", fallback);
-            if (skip) params.append("skip_keywords", skip);
-            if (maxAge) params.append("max_age", maxAge);
-            if (timeout) params.append("request_timeout", timeout);
-
-            // 1. Trigger Backend
-            try {
-                const res = await fetch(`/check?${params.toString()}`);
-
-                if (res.status === 429) {
-                    // Too many requests
-                    const txt = await res.text();
-                    showError("当前任务过多，请稍后再试: " + txt);
-                    checkBtn.disabled = false;
-                    checkBtn.innerText = "开始检测";
-                    return;
-                }
-
-                // Check for Queue Limit Header
-                if (res.headers.get("X-QC-Queue-Full")) {
-                    showError("超过服务器队列处理最大数量，请稍后再试");
-                    checkBtn.disabled = false;
-                    checkBtn.innerText = "开始检测";
-                    return;
-                }
-
-                if (!res.ok) {
-                    const txt = await res.text();
-                    throw new Error(txt || res.statusText);
-                }
-
-                // We switch to monitoring mode.
-                statusBadge.innerText = "连接中...";
-                statusBadge.className = "px-3 py-1 rounded text-xs font-bold bg-gray-700 text-gray-300 animate-pulse";
-
-                localStorage.setItem('active_task_url', url);
-                showStatusView(url);
-                toggleStopBtn(true);
-                connectStream(url);
-
-            } catch (e) {
-                showError("请求失败: " + e.message);
-                checkBtn.disabled = false;
-                checkBtn.innerText = "开始检测";
-            }
-        }
-
-        async function stopCheck() {
-            const url = localStorage.getItem('active_task_url');
-            if (!url) return;
-
-            const requestId = localStorage.getItem('active_task_id');
-
-            const stopBtn = document.getElementById('stop-btn');
-            stopBtn.disabled = true;
-            stopBtn.innerText = "停止中...";
-
-            try {
-                let cancelUrl = `/cancel?url=${encodeURIComponent(url)}`;
-                if (requestId) cancelUrl += `&request_id=${requestId}`;
-                await fetch(cancelUrl, { method: 'POST' });
-            } catch (e) {
-                console.error("Stop failed", e);
-            }
-        }
-
-        function toggleStopBtn(show) {
-            const startBtn = document.getElementById('check-btn');
-            const stopBtn = document.getElementById('stop-btn');
-
-            if (show) {
-                startBtn.classList.add('hidden');
-                stopBtn.classList.remove('hidden');
-                stopBtn.disabled = false;
-                stopBtn.innerText = "停止";
-            } else {
-                startBtn.classList.remove('hidden');
-                startBtn.disabled = false;
-                startBtn.innerText = "开始检测";
-                stopBtn.classList.add('hidden');
-            }
-        }
-
-        function showStatusView(url) {
-            statusPanel.classList.remove('hidden');
-            taskUrlDisplay.innerText = url;
-            urlInput.value = url;
-            // Disable input
-            urlInput.disabled = true;
-            toggleStopBtn(true);
-        }
-
-        function resetView() {
-            localStorage.removeItem('active_task_url');
-            if (evtSource) evtSource.close();
-            statusPanel.classList.add('hidden');
-            urlInput.disabled = false;
-            urlInput.value = "";
-            toggleStopBtn(false);
-            actionArea.classList.add('hidden');
-            logWindow.innerHTML = "";
-            progressBar.style.width = "0%";
-            statusBadge.innerText = "等待中";
-            statusBadge.className = "px-3 py-1 rounded text-xs font-bold bg-gray-700 text-gray-300";
-            queueBox.classList.add('hidden');
-        }
-
-        function connectStream(url) {
-            if (evtSource) evtSource.close();
-
-            evtSource = new EventSource(`/status/stream?url=${encodeURIComponent(url)}`);
-
-            evtSource.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                const status = data.job_status;
-
-                updateBadge(status.status);
-
-                // Handle Unknown/Expired (e.g. server restart)
-                if (status.status === 'unknown') {
-                    evtSource.close();
-                    statusBadge.innerText = "已过期";
-                    statusBadge.className = "px-3 py-1 rounded text-xs font-bold bg-gray-600 text-gray-400";
-                    queueBox.classList.remove('hidden');
-                    queueMsg.innerHTML = `
-                        <div class="flex justify-between items-center w-full">
-                            <span class="text-red-300">任务数据已丢失（服务可能已重启）</span>
-                            <button onclick="resetView()" class="bg-red-700 hover:bg-red-600 text-white px-3 py-1 rounded text-xs font-bold transition-colors">
-                                重试
-                            </button>
-                        </div>
-                    `;
-                    actionArea.classList.remove('hidden');
-                    downloadBtn.style.display = 'none';
-                    return;
-                }
-
-                // Queue
-                if (status.status === 'queued') {
-                    queueBox.classList.remove('hidden');
-                    queueMsg.innerText = `正在排队... (前方还有 ${data.global_queue_size} 个任务)`;
-                } else {
-                    queueBox.classList.add('hidden');
-                }
-
-                // Progress
-                const total = status.total || 1;
-                const current = status.current || 0;
-                const p = Math.min(100, (current / total) * 100);
-                progressBar.style.width = `${p}%`;
-                progressText.innerText = `${current} / ${total}`;
-
-                // Logs (DOM-based Dedup)
-                if (status.message) {
-                    const lastDiv = logWindow.lastElementChild;
-                    const shouldApped = !lastDiv || !lastDiv.textContent.includes(status.message);
-
-                    if (shouldApped) {
-                        const div = document.createElement('div');
-                        const time = new Date().toLocaleTimeString();
-
-                        if (status.message.includes("Result:")) {
-                            // Make Result lines stand out
-                            div.className = "mt-1 mb-1 py-1 text-green-300 font-mono border-l-4 border-green-500 pl-2 bg-green-900/20";
-                            // Replace text for cleaner look if desired, or just style it
-                            div.innerHTML = `<span class="text-xs text-green-700 opacity-50">[${time}]</span> ${status.message}`;
-                        } else if (status.message.includes("Cancelled")) {
-                            div.className = "mt-1 mb-1 py-1 text-yellow-300 font-mono border-l-4 border-yellow-500 pl-2 bg-yellow-900/20";
-                            div.innerHTML = `<span class="text-xs text-yellow-700 opacity-50">[${time}]</span> ${status.message}`;
-                        } else {
-                            div.innerHTML = `<span class="text-xs text-gray-600">[${time}]</span> ${status.message}`;
-                        }
-
-                        logWindow.appendChild(div);
-                        logWindow.scrollTop = logWindow.scrollHeight;
-                    }
-                }
-
-                // Done or Cancelled
-                if (status.status === 'completed' || status.status === 'cancelled') {
-                    evtSource.close();
-                    actionArea.classList.remove('hidden');
-                    toggleStopBtn(false);
-
-                    const checkLink = `${window.location.origin}/check?url=${encodeURIComponent(url)}`;
-                    const downloadLink = `${window.location.origin}/download?url=${encodeURIComponent(url)}`;
-
-                    const resultInput = document.getElementById('result-url');
-
-                    if (status.status === 'cancelled') {
-                        statusBadge.innerText = "已取消";
-                        statusBadge.className = "px-3 py-1 rounded text-xs font-bold bg-yellow-700 text-yellow-200";
-                        if (resultInput) resultInput.value = "Task Cancelled";
-                        downloadBtn.href = downloadLink;
-                        downloadBtn.style.display = 'inline-flex';
-                    } else {
-                        if (resultInput) resultInput.value = checkLink;
-                        downloadBtn.href = downloadLink;
-                        downloadBtn.style.display = 'inline-flex';
-                    }
-                }
-
-                // Error
-                if (status.status === 'error') {
-                    evtSource.close();
-                    actionArea.classList.remove('hidden');
-                    downloadBtn.style.display = 'none'; // Hide download
-                    toggleStopBtn(false);
-
-                    const resultInput = document.getElementById('result-url');
-                    if (resultInput) resultInput.value = "Error: Check logs";
-
-                    const err = document.createElement('div');
-                    err.className = "text-red-500 font-bold mt-2";
-                    err.innerText = `FATAL ERROR: ${status.error}`;
-                    logWindow.appendChild(err);
-                }
-            };
-
-            evtSource.onerror = (e) => {
-                // SSE 断线重连逻辑
-                console.warn("SSE connection error", e);
-                evtSource.close();
-
-                // 检查是否应该重连（任务未完成时才重连）
-                const lastStatus = statusBadge.innerText;
-                if (lastStatus === "检测完成" || lastStatus === "出错了" || lastStatus === "已过期" || lastStatus === "已取消") {
-                    console.log("Task already finished, not reconnecting.");
-                    return;
-                }
-
-                // 重连计数器（存储在 evtSource 对象上）
-                window.sseRetryCount = (window.sseRetryCount || 0) + 1;
-
-                if (window.sseRetryCount > 3) {
-                    console.error("SSE reconnect failed after 3 attempts");
-                    statusBadge.innerText = "连接断开";
-                    statusBadge.className = "px-3 py-1 rounded text-xs font-bold bg-red-900 text-red-200";
-                    queueBox.classList.remove('hidden');
-                    queueMsg.innerHTML = `
-                        <div class="flex justify-between items-center w-full">
-                            <span class="text-red-300">连接已断开，请刷新页面重试</span>
-                            <button onclick="location.reload()" class="bg-red-700 hover:bg-red-600 text-white px-3 py-1 rounded text-xs font-bold transition-colors">
-                                刷新页面
-                            </button>
-                        </div>
-                    `;
-                    return;
-                }
-
-                console.log(`SSE reconnecting in 3s... (attempt ${window.sseRetryCount}/3)`);
-                statusBadge.innerText = "重连中...";
-                statusBadge.className = "px-3 py-1 rounded text-xs font-bold bg-yellow-900 text-yellow-200 animate-pulse";
-
-                setTimeout(() => {
-                    connectStream(url);
-                }, 3000);
-            };
-
-            // 连接成功时重置重试计数
-            evtSource.onopen = () => {
-                window.sseRetryCount = 0;
-            };
-        }
-
-        async function copyResult() {
-            const copyText = document.getElementById("result-url");
-            if (!copyText || !copyText.value) return;
-
-            try {
-                // Try modern API first
-                await navigator.clipboard.writeText(copyText.value);
-                showCopySuccess();
-            } catch (err) {
-                // Fallback: Create temporary textarea
-                const textArea = document.createElement("textarea");
-                textArea.value = copyText.value;
-
-                // Ensure it's not visible but part of DOM
-                textArea.style.position = "fixed";
-                textArea.style.left = "-9999px";
-                textArea.style.top = "0";
-                document.body.appendChild(textArea);
-
-                textArea.focus();
-                textArea.select();
-
-                try {
-                    const successful = document.execCommand('copy');
-                    if (successful) showCopySuccess();
-                    else alert("复制失败，请手动选择复制。");
-                } catch (e) {
-                    alert("复制失败，请手动选择复制。");
-                }
-
-                document.body.removeChild(textArea);
-            }
-        }
-
-        function showCopySuccess() {
-            const btn = document.querySelector('button[onclick="copyResult()"]');
-            if (btn) {
-                const originalText = btn.innerText;
-                btn.innerText = "已复制!";
-                btn.classList.replace("bg-gray-700", "bg-green-600");
-                setTimeout(() => {
-                    btn.innerText = originalText;
-                    btn.classList.replace("bg-green-600", "bg-gray-700");
-                }, 2000);
-            }
-        }
-
-        function updateBadge(s) {
-            statusBadge.className = "px-3 py-1 rounded text-xs font-bold transition-colors ";
-            if (s === 'queued') {
-                statusBadge.classList.add('bg-yellow-900', 'text-yellow-200', 'animate-pulse');
-                statusBadge.innerText = "排队中";
-            }
-            else if (s === 'running') {
-                statusBadge.innerText = "检测中";
-                statusBadge.classList.add('bg-blue-900', 'text-blue-200', 'animate-pulse');
-            }
-            else if (s === 'completed') {
-                statusBadge.innerText = "检测完成";
-                statusBadge.classList.add('bg-green-900', 'text-green-200');
-            }
-            else if (s === 'error') {
-                statusBadge.innerText = "出错了";
-                statusBadge.classList.add('bg-red-900', 'text-red-200');
-            }
-            else {
-                statusBadge.innerText = s.toUpperCase();
-                statusBadge.classList.add('bg-gray-700', 'text-gray-300');
-            }
-        }
-
-        function showError(msg) {
-            errorMsg.innerText = msg;
-            errorMsg.classList.remove('hidden');
-        }
-    </script>
-    <!-- Footer -->
-    <footer class="mt-12 mb-6 text-center text-gray-400 dark:text-gray-500 text-sm">
-        <p>
-            Powered by Clash IP Checker &copy; 2025 |
-            <button onclick="togglePrivacyModal()"
-                class="hover:text-blue-500 transition-colors underline decoration-dotted">免责申明 (Privacy
-                Disclaimer)</button>
-        </p>
-    </footer>
-
-    <!-- Privacy Modal -->
-    <div id="privacy-modal" class="fixed inset-0 z-[100] hidden" aria-labelledby="modal-title" role="dialog"
-        aria-modal="true">
-        <!-- Backdrop -->
-        <div class="fixed inset-0 bg-gray-900/75 backdrop-blur-sm transition-opacity" onclick="togglePrivacyModal()">
-        </div>
-
-        <div class="fixed inset-0 z-10 w-screen overflow-y-auto">
-            <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-                <!-- Modal Panel -->
-                <div
-                    class="relative transform overflow-hidden rounded-2xl bg-white dark:bg-gray-800 text-left shadow-2xl transition-all sm:my-8 sm:w-full sm:max-w-lg border border-gray-200 dark:border-gray-700">
-                    <div class="bg-white dark:bg-gray-800 px-4 pb-4 pt-5 sm:p-6 sm:pb-4">
-                        <div class="sm:flex sm:items-start">
-                            <div
-                                class="mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900 sm:mx-0 sm:h-10 sm:w-10">
-                                <svg class="h-6 w-6 text-blue-600 dark:text-blue-400" fill="none" viewBox="0 0 24 24"
-                                    stroke-width="1.5" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round"
-                                        d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                                </svg>
-                            </div>
-                            <div class="mt-3 text-center sm:ml-4 sm:mt-0 sm:text-left">
-                                <h3 class="text-xl font-bold leading-6 text-gray-900 dark:text-white" id="modal-title">
-                                    免责申明 (Data Privacy)</h3>
-                                <div class="mt-4 text-sm text-gray-500 dark:text-gray-300 space-y-3">
-                                    <p><strong class="text-gray-900 dark:text-gray-100">1. 数据隐私 (Data
-                                            Privacy)</strong><br>
-                                        本工具（Clash IP Checker）仅作为连接性测试用途。我们不会永久收集您的订阅内容。您的订阅链接和配置仅会在服务器本地缓存一段时间（默认 1
-                                        小时）以提升检测速度，之后将被自动清除。我们承诺不向任何第三方分享您的订阅数据。</p>
-
-                                    <p><strong class="text-gray-900 dark:text-gray-100">2. 使用责任 (Usage
-                                            Responsibility)</strong><br>
-                                        本服务仅供技术研究与学习交流。用户需自行负责其使用的订阅源的合法性与安全性。请勿用于非法用途。</p>
-
-                                    <p><strong class="text-gray-900 dark:text-gray-100">3. 免责声明
-                                            (Disclaimer)</strong><br>
-                                        本工具按“现状”提供，不包含任何形式的明示或暗示保证。开发者不对因使用本工具而导致的任何数据丢失、被墙或其他后果承担责任。</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="bg-gray-50 dark:bg-gray-700/50 px-4 py-3 sm:flex sm:flex-row-reverse sm:px-6">
-                        <button type="button" onclick="togglePrivacyModal()"
-                            class="inline-flex w-full justify-center rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500 sm:ml-3 sm:w-auto transition-colors">我已知晓
-                            (Understood)</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        function togglePrivacyModal() {
-            const modal = document.getElementById('privacy-modal');
-            modal.classList.toggle('hidden');
-        }
-    </script>
+      </div>
+    </section>
+  </main>
+
+  <footer>IP-Stream-Checker · 流媒体解锁 + IP 风险检测</footer>
+</div>
+
+<script>
+// ============ 全局状态 ============
+let evtSource = null;
+let activeUrl = null;
+let activeRequestId = null;
+let logCount = 0; // 日志去重用
+
+// ============ 工具 ============
+function uuid() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+function ts() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 8);
+}
+function addLog(msg, type) {
+  const win = document.getElementById('log-window');
+  const line = document.createElement('div');
+  line.className = 'log-line ' + (type || 'info');
+  line.innerHTML = `<span class="t">[${ts()}]</span>${escapeHtml(msg)}`;
+  win.appendChild(line);
+  win.scrollTop = win.scrollHeight;
+  logCount++;
+  // 最多保留 500 行,防止内存膨胀
+  while (win.children.length > 500) win.removeChild(win.firstChild);
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function setBadge(text, cls) {
+  const b = document.getElementById('status-badge');
+  b.textContent = text;
+  b.className = 'badge ' + (cls || '');
+}
+function setProgress(cur, total) {
+  const pct = total > 0 ? Math.min(100, (cur / total) * 100) : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+  document.getElementById('progress-text').textContent = `${cur} / ${total}`;
+}
+
+// ============ 加载设置 ============
+async function loadSettings() {
+  try {
+    const res = await fetch('/api/settings');
+    const s = await res.json();
+    document.getElementById('setting-source').value = s.source || 'ping0';
+    document.getElementById('setting-fallback').checked = !!s.fallback;
+    document.getElementById('setting-timeout').value = s.request_timeout || 15;
+    document.getElementById('setting-check-url').value = s.check_url || '';
+    document.getElementById('setting-max-age').value = s.max_age ?? 360;
+    document.getElementById('setting-max-queue').value = s.max_queue_size || 10;
+    document.getElementById('setting-risk-filter').value = s.filter_risk_threshold ?? 0;
+    document.getElementById('setting-retention').value = s.result_retention_days ?? 7;
+    document.getElementById('setting-stream-enabled').checked = !!s.stream_test.enabled;
+    document.getElementById('setting-stream-timeout').value = s.stream_test.timeout || 90;
+
+    // 流媒体服务开关
+    const grid = document.getElementById('providers-grid');
+    grid.innerHTML = '';
+    const selected = s.stream_test.providers || [];
+    (s.available_providers || []).forEach(name => {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.value = name;
+      cb.checked = selected.includes(name);
+      cb.addEventListener('change', () => label.classList.toggle('checked', cb.checked));
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(name));
+      if (cb.checked) label.classList.add('checked');
+      grid.appendChild(label);
+    });
+  } catch (e) {
+    console.error('加载设置失败', e);
+  }
+}
+
+async function saveSettings() {
+  const selected = Array.from(document.querySelectorAll('#providers-grid input:checked')).map(i => i.value);
+  const body = {
+    source: document.getElementById('setting-source').value,
+    fallback: document.getElementById('setting-fallback').checked,
+    request_timeout: parseInt(document.getElementById('setting-timeout').value) || 15,
+    check_url: document.getElementById('setting-check-url').value.trim(),
+    max_queue_size: parseInt(document.getElementById('setting-max-queue').value) || 10,
+    max_age: parseInt(document.getElementById('setting-max-age').value) || 0,
+    filter_risk_threshold: parseInt(document.getElementById('setting-risk-filter').value) || 0,
+    result_retention_days: parseInt(document.getElementById('setting-retention').value) || 7,
+    stream_test: {
+      enabled: document.getElementById('setting-stream-enabled').checked,
+      providers: selected,
+      timeout: parseInt(document.getElementById('setting-stream-timeout').value) || 90,
+    }
+  };
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const tip = document.getElementById('save-tip');
+    tip.textContent = res.ok ? '✅ 已保存(下次检测生效)' : '❌ 保存失败';
+    setTimeout(() => tip.textContent = '', 3000);
+  } catch (e) {
+    alert('保存失败: ' + e.message);
+  }
+}
+
+// ============ 检测流程 ============
+async function startCheck() {
+  const url = document.getElementById('sub-url').value.trim();
+  if (!url) { alert('请先输入订阅链接'); return; }
+
+  activeRequestId = uuid();
+  activeUrl = url;
+
+  const btn = document.getElementById('check-btn');
+  const stopBtn = document.getElementById('stop-btn');
+  btn.style.display = 'none';
+  stopBtn.style.display = '';
+  document.getElementById('result-row').style.display = 'none';
+  setBadge('连接中...', 'running');
+  setProgress(0, 0);
+  addLog('🚀 开始检测: ' + url, 'rainbow');
+
+  const params = new URLSearchParams();
+  params.append('url', url);
+  params.append('request_id', activeRequestId);
+  params.append('source', document.getElementById('setting-source').value);
+  params.append('fallback', document.getElementById('setting-fallback').checked);
+  params.append('request_timeout', document.getElementById('setting-timeout').value);
+  const maxAge = document.getElementById('setting-max-age').value;
+  if (maxAge) params.append('max_age', maxAge);
+  const riskFilter = document.getElementById('setting-risk-filter').value;
+  if (riskFilter) params.append('filter_risk_threshold', riskFilter);
+
+  try {
+    const res = await fetch('/check?' + params.toString());
+    if (res.status === 429) {
+      addLog('队列已满,请稍后再试', 'error');
+      resetButtons();
+      return;
+    }
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || res.statusText);
+    }
+    connectStream(url);
+  } catch (e) {
+    addLog('请求失败: ' + e.message, 'error');
+    resetButtons();
+  }
+}
+
+async function stopCheck() {
+  if (!activeUrl) return;
+  try {
+    await fetch(`/cancel?url=${encodeURIComponent(activeUrl)}&request_id=${activeRequestId}`, { method: 'POST' });
+    addLog('⏹️ 已发送停止请求...', 'cancelled');
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function resetButtons() {
+  document.getElementById('check-btn').style.display = '';
+  document.getElementById('stop-btn').style.display = 'none';
+}
+
+function connectStream(url) {
+  if (evtSource) evtSource.close();
+  evtSource = new EventSource(`/status/stream?url=${encodeURIComponent(url)}`);
+  setBadge('检测中...', 'running');
+
+  evtSource.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    const st = data.job_status;
+
+    if (st.status === 'unknown') {
+      evtSource.close();
+      setBadge('已过期', 'cancelled');
+      addLog('任务数据已丢失(服务可能重启)', 'cancelled');
+      resetButtons();
+      return;
+    }
+    if (st.status === 'queued') {
+      setBadge(`排队中(${data.global_queue_size})`, 'running');
+      return;
+    }
+    if (st.status === 'running') {
+      setBadge('检测中...', 'running');
+    }
+    setProgress(st.current || 0, st.total || 0);
+
+    // 日志(按类型着色)
+    if (st.message) {
+      const msg = st.message;
+      let type = 'info';
+      if (msg.includes('Result:')) type = 'result';
+      else if (msg.includes('Checking:')) type = 'checking';
+      else if (msg.includes('Cancelled') || msg.includes('停止')) type = 'cancelled';
+      else if (msg.includes('Error') || msg.includes('失败') || msg.includes('FATAL')) type = 'error';
+      addLog(msg, type);
+    }
+
+    if (st.status === 'completed' || st.status === 'cancelled' || st.status === 'error') {
+      evtSource.close();
+      resetButtons();
+      if (st.status === 'completed') {
+        setBadge('✅ 完成', 'done');
+        addLog('✅ 检测完成!', 'result');
+        // 显示订阅链接 + 下载
+        const link = `${location.origin}/check?url=${encodeURIComponent(url)}`;
+        const dl = `${location.origin}/download?url=${encodeURIComponent(url)}`;
+        document.getElementById('result-url').value = link;
+        document.getElementById('download-btn').href = dl;
+        document.getElementById('result-row').style.display = '';
+        loadHistory(); // 刷新历史
+      } else if (st.status === 'cancelled') {
+        setBadge('已取消', 'cancelled');
+      } else {
+        setBadge('出错', 'error');
+        if (st.error) addLog('FATAL: ' + st.error, 'error');
+      }
+    }
+  };
+  evtSource.onerror = () => {
+    // EventSource 会自动重连,这里只标记
+    setBadge('重连中...', 'running');
+  };
+}
+
+function copyResult() {
+  const input = document.getElementById('result-url');
+  input.select();
+  document.execCommand('copy');
+  alert('已复制订阅链接');
+}
+
+// ============ 历史记录 ============
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/history?limit=50');
+    const data = await res.json();
+    const list = document.getElementById('history-list');
+    list.innerHTML = '';
+    if (!data.records || data.records.length === 0) {
+      list.innerHTML = '<div class="history-empty">暂无记录</div>';
+      return;
+    }
+    data.records.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'history-item';
+      item.innerHTML = `
+        <div class="url">${escapeHtml(r.url)}</div>
+        <div class="meta"><span>${escapeHtml(r.timestamp)}</span><span>${r.node_count} 节点</span></div>`;
+      item.onclick = () => showHistoryDetail(r.md5, item);
+      list.appendChild(item);
+    });
+  } catch (e) {
+    console.error('加载历史失败', e);
+  }
+}
+
+async function showHistoryDetail(md5, el) {
+  // 高亮当前项
+  document.querySelectorAll('.history-item').forEach(i => i.classList.remove('active'));
+  el.classList.add('active');
+
+  const detail = document.getElementById('history-detail');
+  try {
+    const res = await fetch('/api/history/' + md5);
+    if (!res.ok) { detail.innerHTML = '<div class="history-empty">记录不存在或已过期</div>'; detail.style.display = ''; return; }
+    const data = await res.json();
+    detail.innerHTML = `
+      <div class="panel-title" style="margin-top:6px;"><span>📄 ${escapeHtml(data.timestamp)}</span></div>
+      <div style="font-size:12px;color:var(--muted);word-break:break-all;margin-bottom:6px;">${escapeHtml(data.url)}</div>
+      <pre>${escapeHtml(data.yaml)}</pre>`;
+    detail.style.display = '';
+  } catch (e) {
+    detail.innerHTML = '<div class="history-empty">加载失败</div>';
+  }
+}
+
+// ============ 初始化 ============
+loadSettings();
+loadHistory();
+</script>
 </body>
-
 </html>

@@ -120,22 +120,43 @@ class CheckerService:
         import re
         return re.sub(r'\s*【[^】]*】', '', name).strip()
 
+    @staticmethod
+    def _parse_score(score) -> float:
+        """把风险度字符串(如 '61%')解析为数值;解析失败返回 None。"""
+        if not score:
+            return None
+        try:
+            return float(str(score).replace('%', '').strip())
+        except (ValueError, TypeError):
+            return None
+
     def _format_name(self, old_name: str, res: dict, stream_label: str = "") -> str:
+        """按新格式重命名节点:
+        {原节点名}·{风险度%}·{流媒体解锁摘要}{IP标注}
+        例: 🇭🇰 HK-01·61%·GM✓(sg)·NF✓(us)·GPT✓【🟢 住宅|原生】
+        """
         # 先去掉已有的标注
         base_name = self._strip_old_tag(old_name)
-        
+
         if res["error"]:
             return f"{base_name} 【❌ 失败】"
-            
-        # Logic from ping0.py might return "full_string" directly?
-        if "full_string" in res and res["full_string"]:
-             # If source provides full formatted string, use it but keep base name
-             # But ping0 returns "【...】"
-             # So we return base_name + full_string
-             return f"{base_name} {res['full_string']}{stream_label}"
 
-        info = f"{res['ip_attr']}|{res['ip_src']}"
-        return f"{base_name} 【{res['pure_emoji']} {info}】{stream_label}"
+        # 1. 风险度百分比(污染度)
+        score = res.get("pure_score")
+        if score in (None, "", "?", "❓"):
+            score = ""
+
+        # 2. IP 检测标注(直接拼接在末尾,不加分隔符)
+        if "full_string" in res and res["full_string"]:
+            # ping0 返回形如 【🟢⚪ 住宅|原生】
+            ip_tag = res["full_string"]
+        else:
+            info = f"{res['ip_attr']}|{res['ip_src']}"
+            ip_tag = f"【{res['pure_emoji']} {info}】"
+
+        # 主体部分(节点名·风险度·流媒体解锁摘要)用 · 连接,空项跳过
+        prefix = "·".join(p for p in (base_name, str(score), stream_label) if p)
+        return prefix + ip_tag
 
     async def async_atomic_save(self, data: dict, file_path: str):
         """Async wrapper for atomic save."""
@@ -205,6 +226,10 @@ class CheckerService:
             
             # Get Config Values (Runtime Override or Global)
             skip_keywords = options.get("skip_keywords") or self.SKIP_KEYWORDS
+            # 风险节点过滤阈值(风险度超过该值的节点从输出中移除, 0 = 不过滤)
+            risk_threshold = options.get("filter_risk_threshold", config.filter_risk_threshold)
+            # 记录因风险过高被移除的节点名,循环结束后统一从输出中删除
+            removed_risky = []
             
             for i, p_config in enumerate(yaml_proxies):
                 # Check cancellation
@@ -235,6 +260,18 @@ class CheckerService:
                     # Check
                     await asyncio.sleep(0.5) # Wait switch
                     res = await self._check_ip_fast(proxy_url, options=options)
+
+                    # 风险节点过滤: 风险度超过阈值的节点从输出中移除(方便直接导入 OpenClash)
+                    if risk_threshold and risk_threshold > 0 and not res.get("error"):
+                        score_val = self._parse_score(res.get("pure_score"))
+                        if score_val is not None and score_val > risk_threshold:
+                            removed_risky.append(name)
+                            checked_count += 1
+                            print(f"       => [已移除] {display_name} (风险度 {res.get('pure_score')} > {risk_threshold}%)", flush=True)
+                            if progress_cb:
+                                await progress_cb(checked_count, total,
+                                    f"已移除风险节点: {display_name} (风险 {res.get('pure_score')} > {risk_threshold}%)")
+                            continue
 
                     # 流媒体解锁检测(整合 MediaUnlockTest):
                     # 仅当 IP 检测成功(节点可用)时执行,避免无效节点拖慢整个任务
@@ -284,6 +321,16 @@ class CheckerService:
                     checked_count += 1  # 即使失败也要计数，保证进度条准确
                     if progress_cb:
                         await progress_cb(checked_count, total, f"Error: Could not switch to {display_name}")
+
+            # 统一移除风险过高的节点(从 proxies 与 proxy-groups 中删除)
+            if removed_risky:
+                yaml_data['proxies'] = [p for p in yaml_data.get('proxies', []) if p.get('name') not in removed_risky]
+                for g in yaml_data.get('proxy-groups', []):
+                    if 'proxies' in g:
+                        g['proxies'] = [pn for pn in g['proxies'] if pn not in removed_risky]
+                print(f"[FILTER] 已移除 {len(removed_risky)} 个风险过高节点: {removed_risky}", flush=True)
+                if progress_cb:
+                    await progress_cb(checked_count, total, f"已移除 {len(removed_risky)} 个风险过高节点")
 
             # Debug: Verify modification before final save? 
             await self.async_atomic_save(yaml_data, file_path) # Force final save

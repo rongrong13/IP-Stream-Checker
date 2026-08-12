@@ -1,4 +1,10 @@
 # ============================================================
+# 阶段 0: 获取 Mihomo (Clash Meta) 二进制
+# 从 Docker Hub 官方镜像提取(走 registry-mirrors 加速,比直接下载 GitHub 可靠)
+# ============================================================
+FROM --platform=$TARGETPLATFORM metacubex/mihomo:v1.19.18 AS mihomo
+
+# ============================================================
 # 阶段 1: 构建 MediaUnlockTest (Go) 二进制
 # 使用 BUILDPLATFORM(原生架构)运行,通过 GOARCH 交叉编译目标架构二进制,
 # 避免 QEMU 模拟编译(极慢)
@@ -47,25 +53,9 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Mihomo (Clash Meta)
-# 多架构支持: 优先使用 buildx 注入的 TARGETARCH,为空时用 uname -m 自动检测,
-# 兼容不支持 BuildKit 自动 ARG 的旧版 Docker
-ARG TARGETARCH
-RUN set -e; \
-    arch="${TARGETARCH:-$(uname -m)}"; \
-    case "$arch" in \
-      amd64|x86_64)  url="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.18/mihomo-linux-amd64-v1.19.18.gz" ;; \
-      arm64|aarch64) url="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.18/mihomo-linux-arm64-v1.19.18.gz" ;; \
-      arm|armv7*)    url="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.18/mihomo-linux-armv7-v1.19.18.gz" ;; \
-      *) echo "不支持的架构: $arch"; exit 1 ;; \
-    esac; \
-    curl -L -o clash.gz "$url" && \
-    gunzip clash.gz && \
-    chmod +x clash && \
-    mv clash /usr/local/bin/clash
-
-# Verify installation
-RUN clash -v
+# 从 Docker Hub 镜像阶段复制 mihomo 二进制(多架构自动匹配)
+COPY --from=mihomo /mihomo /usr/local/bin/clash
+RUN chmod +x /usr/local/bin/clash && /usr/local/bin/clash -v
 
 # Pre-download GeoIP and GeoSite databases (尽力而为)
 # 国内网络下载 GitHub 资源不稳定,失败不阻塞构建。
