@@ -25,7 +25,7 @@
 | `clash-ip-checker-docker`(同目录参考源) | Python/FastAPI | IP 风险检测、订阅转换 `/check`、任务队列、MD5 缓存、SSE 进度 | 作为**基座**,保留其服务框架 |
 | `MediaUnlockTest-main`(同目录参考源) | Go | 100+ 流媒体解锁检测 | 源码内置 `mediatest/`,Python 通过 subprocess 调用其 `-json` 模式 |
 
-> 两个源项目保留在同目录(`本地项目目录/`)供对照参考。
+> 两个源项目保留在项目同目录供对照参考。
 
 ## 三、目录结构(核心)
 
@@ -86,8 +86,8 @@ IP-Stream-Checker/
 
 ## 六、部署现状
 
-- **软路由**(Kwrt OpenWrt, arm64): 源码在 `路由器本地 docker_compose 目录中的 IP-Stream-Checker`, `docker compose up -d --build` 部署, 面板 `http://192.168.x.1:8000/ipcheck`
-- **镜像**: `本地项目目录/镜像/ip-stream-checker-arm64-v2.tar`(arm64 免构建)
+- **软路由**(Kwrt OpenWrt, arm64): 源码部署在路由器本地的 docker_compose 目录, `docker compose up -d --build` 启动, 面板 `http://<路由器IP>:8000/ipcheck`
+- **镜像**: 本地"镜像"目录下的 arm64 免构建 tar 包
 - **GitHub**: `https://github.com/rongrong13/IP-Stream-Checker`(默认分支 master, gh CLI 已登录可推送)
 
 ## 七、已知问题(优化方向, 给 Zcode agent 的 TODO)
@@ -107,18 +107,18 @@ IP-Stream-Checker/
 
 **仓库信息**
 - GitHub: `https://github.com/rongrong13/IP-Stream-Checker`(默认分支 **master**)
-- 本地路径: `本地项目目录/IP-Stream-Checker`
+- 本地路径: 以实际克隆/解压位置为准(本项目为 git 仓库, `git clone` 或直接打开本地目录即可)
 - git remote(SSH): `git@github.com:rongrong13/IP-Stream-Checker.git`
 
 **本机凭据(都已验证可用, 无需再配置)**
 - `gh` CLI 已登录账号 `rongrong13`(token 存系统钥匙串, 支持 `gh` 命令与 git HTTPS 凭据)
-- SSH key: `本机 SSH key` 已添加到 GitHub, `ssh -T git@github.com` 认证通过(推送免密)
+- SSH key: 本机已配置 SSH key 并添加到 GitHub, `ssh -T git@github.com` 认证通过(推送免密)
 - git remote 使用 SSH 格式, `git push` 直接可用
 
 **Zcode 可执行的 GitHub 操作**
 ```bash
-# 方式1: 直接打开本地项目
-zed 本地项目目录/IP-Stream-Checker
+# 方式1: 直接打开本地项目(路径以实际位置为准)
+zed <项目本地路径>
 
 # 方式2: 从 GitHub 克隆(全新环境)
 git clone git@github.com:rongrong13/IP-Stream-Checker.git
