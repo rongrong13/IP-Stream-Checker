@@ -135,3 +135,36 @@ class ClashController:
                         return conf.get('mixed-port') or conf.get('port') or 7890
         except:
             return 7890
+
+    async def test_group_delay(self, group: str = "GLOBAL", url: str = "http://www.gstatic.com/generate_204",
+                               timeout_ms: int = 3000) -> dict:
+        """对分组内所有节点并发测活(由 Mihomo 内核并发执行)。
+
+        借鉴 subs-check 的测活思路: 在正式检测前先剔除不可用节点,
+        避免死节点在 IP/流媒体检测阶段白白等待超时。
+        内核返回 JSON: {"delay": {"节点名": 延迟毫秒, ...}} (测活失败/超时的节点不出现)。
+
+        Args:
+            group:      分组名(全局模式下为 GLOBAL)
+            url:        探测地址,返回 2xx 即视为存活
+            timeout_ms: 单节点测活超时(毫秒)
+
+        Returns:
+            存活节点名 -> 延迟毫秒 的映射;失败返回 {}
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/group/{urllib.parse.quote(group)}/delay",
+                    params={"url": url, "timeout": timeout_ms},
+                    headers=self.headers, timeout=max(10, timeout_ms // 1000 + 10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data.get("delay") or {}
+                    else:
+                        print(f"[WARN] Test group delay failed: HTTP {resp.status}", flush=True)
+                        return {}
+        except Exception as e:
+            print(f"[WARN] Test group delay error: {e}", flush=True)
+            return {}

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import shutil
 import yaml
 import logging
@@ -13,6 +14,12 @@ from stream_tester.media_unlock import MediaUnlockTester
 # Configure logging
 # logging.basicConfig removed
 logger = logging.getLogger("CheckerService")
+
+# 自动降级(allow_fallback=True)时可选的备用数据源池。
+# ping0/ippure 已被 Cloudflare 拦截或官方 API 失效,若作为自动 fallback,
+# 每个检测失败的节点都要白白等待其超时(约 30-45s),故自动降级只回落到当前可用的源。
+# 手动选择 ping0/ippure 作为主源时,仍可用 ipapi 兜底。
+FALLBACK_POOL = ["ipapi"]
 
 class CheckerService:
     def __init__(self, api_url: str = None, api_secret: str = ""):
@@ -65,28 +72,13 @@ class CheckerService:
         # Determine Order from options or config
         primary_name = options.get("source") or config.source
         allow_fallback = options.get("fallback") if options.get("fallback") is not None else config.fallback
-        request_timeout = options.get("request_timeout") or config.request_timeout # Check sources usage
-        
-        # Note: Actual timeout is set in Source.check() but currently sources read config.request_timeout directly.
-        # Ideally we pass timeout to source.check(..., timeout=...)
-        # But for now let's keep it simple or monkeypatch config context if possible? 
-        # Better: Update BaseSource.check signature later?
-        # Actually, let's just assume sources use global config for now unless we refactor sources too.
-        # Wait, user wants "request_timeout" configurable.
-        # I should pass it to source.check.
-        
-        ordered_sources = []
-        if primary_name in sources:
-            ordered_sources.append(sources[primary_name])
-        
-        # Add fallback
-        if allow_fallback:
-            for name, src in sources.items():
-                if name != primary_name:
-                    ordered_sources.append(src)
-        
+        request_timeout = options.get("request_timeout") or config.request_timeout
+
+        # 按主源 + 降级池构建检测顺序(自动降级只回落到当前可用源,避免白等已失效源)
+        order_names = self._build_source_order(primary_name, allow_fallback, set(sources.keys()))
+        ordered_sources = [sources[n] for n in order_names if n in sources]
         if not ordered_sources:
-             ordered_sources = [sources["ping0"], sources["ippure"]]
+            ordered_sources = [sources["ping0"], sources["ippure"]]
 
         last_error = None
         
@@ -116,6 +108,24 @@ class CheckerService:
             "pure_score": "?", "ip": "?", 
             "error": f"All sources failed. Last: {last_error}"
         }
+
+    @staticmethod
+    def _build_source_order(primary_name: str, allow_fallback: bool, available: set) -> list:
+        """构建数据源检测顺序: 主源在前,降级时追加当前可用源(FALLBACK_POOL)。
+
+        ping0/ippure 已被 Cloudflare 拦截或 API 失效,不作为自动降级目标;
+        手动选择它们作为主源时,仍可用 ipapi 兜底。
+        """
+        ordered = []
+        if primary_name in available:
+            ordered.append(primary_name)
+        if allow_fallback:
+            for name in FALLBACK_POOL:
+                if name != primary_name and name in available:
+                    ordered.append(name)
+        if not ordered:
+            ordered = ["ping0", "ippure"]
+        return ordered
 
     def _strip_old_tag(self, name: str) -> str:
         """去除节点名中已有的检测标注 【...】"""
@@ -232,8 +242,43 @@ class CheckerService:
             risk_threshold = options.get("filter_risk_threshold", config.filter_risk_threshold)
             # 记录因风险过高被移除的节点名,循环结束后统一从输出中删除
             removed_risky = []
-            
-            for i, p_config in enumerate(yaml_proxies):
+
+            # ---- 节点测活(借鉴 subs-check): 用 Mihomo 内核并发测活,提前剔除不可用节点 ----
+            # 不可用节点不进入 IP 检测/流媒体检测阶段,避免白白等待超时,显著加速大订阅。
+            dead_nodes = set()
+            alive_cfg = config.alive_test
+            if alive_cfg["enabled"] and yaml_proxies:
+                if progress_cb:
+                    await progress_cb(0, total, "节点测活中(内核并发)...")
+                print(f"[INFO] Testing liveness for {total} nodes via Mihomo group delay...", flush=True)
+                alive_map = await self.clash.test_group_delay(
+                    group="GLOBAL",
+                    url=alive_cfg["url"],
+                    timeout_ms=alive_cfg["timeout_ms"],
+                )
+                if alive_map:
+                    # 只对真正要检测的节点(非 skip 关键词)判断存活
+                    dead_nodes = {
+                        p["name"] for p in yaml_proxies
+                        if not any(k in p["name"] for k in skip_keywords)
+                        and p["name"] not in alive_map
+                    }
+                    alive_count = len(yaml_proxies) - len(dead_nodes)
+                    print(f"[INFO] Alive: {alive_count}, Dead: {len(dead_nodes)}", flush=True)
+                    if progress_cb and dead_nodes:
+                        await progress_cb(0, total, f"测活完成: 存活 {alive_count}, 不可用 {len(dead_nodes)}")
+                else:
+                    # 测活接口不可用(如内核不支持): 安全降级为全部存活
+                    print("[WARN] 测活接口无返回,跳过测活(全部按存活处理)", flush=True)
+            dead_policy = alive_cfg["dead_policy"] if alive_cfg["enabled"] else "skip"
+
+            # ---- 打乱测试顺序(借鉴 subs-check shuffle-test-order): 只影响测试先后,输出保持原序 ----
+            order = list(range(len(yaml_proxies)))
+            if config.shuffle_test_order and len(order) > 1:
+                random.shuffle(order)
+
+            for idx in order:
+                p_config = yaml_proxies[idx]
                 # Check cancellation
                 if stop_event and stop_event.is_set():
                     print("[INFO] Check cancelled by user.", flush=True)
@@ -250,11 +295,25 @@ class CheckerService:
                         await progress_cb(checked_count, total, f"Skipped: {name}")
                      continue
 
+                # 不可用节点(测活未通过): 按策略跳过或移除
+                if name in dead_nodes:
+                    checked_count += 1
+                    if dead_policy == "remove":
+                        removed_risky.append(name)
+                        print(f"       => [已移除] {name} (测活不可用)", flush=True)
+                        if progress_cb:
+                            await progress_cb(checked_count, total, f"已移除不可用节点: {name}")
+                    else:
+                        print(f"       => [已跳过] {name} (测活不可用)", flush=True)
+                        if progress_cb:
+                            await progress_cb(checked_count, total, f"跳过不可用节点: {name}")
+                    continue
+
                 # Use clean name for logging to avoid confusion with old results
                 display_name = self._strip_old_tag(name)
                 
                 # Switch
-                print(f"[INFO] Checking [{i+1}/{total}]: {display_name}", flush=True)
+                print(f"[INFO] Checking [{idx+1}/{total}]: {display_name}", flush=True)
                 if progress_cb:
                     await progress_cb(checked_count, total, f"Checking: {display_name}")
 

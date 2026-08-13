@@ -5,6 +5,9 @@ import time
 from typing import Dict, List, Optional
 from core.checker_service import CheckerService
 
+# 单个任务日志保留上限: 防止无人订阅 SSE 时日志无限堆积
+MAX_PENDING_LOGS = 200
+
 class JobStatus:
     def __init__(self, url: str, request_id: str = None):
         self.url = url
@@ -27,6 +30,8 @@ class JobStatus:
         self.message = message
         async with self._logs_lock:
             self.pending_logs.append(message)
+            if len(self.pending_logs) > MAX_PENDING_LOGS:
+                self.pending_logs = self.pending_logs[-MAX_PENDING_LOGS:]
 
     async def complete(self):
         self.status = "completed"
@@ -34,6 +39,8 @@ class JobStatus:
         self.message = "Done"
         async with self._logs_lock:
             self.pending_logs.append("Done")
+            if len(self.pending_logs) > MAX_PENDING_LOGS:
+                self.pending_logs = self.pending_logs[-MAX_PENDING_LOGS:]
 
     async def cancel(self):
         self.status = "cancelled"
@@ -42,6 +49,8 @@ class JobStatus:
         self.stop_event.set()
         async with self._logs_lock:
             self.pending_logs.append("Cancelled by user")
+            if len(self.pending_logs) > MAX_PENDING_LOGS:
+                self.pending_logs = self.pending_logs[-MAX_PENDING_LOGS:]
 
     async def get_and_clear_logs(self) -> List[str]:
         async with self._logs_lock:
@@ -56,6 +65,9 @@ class JobStatus:
         self.message = f"Error: {error}"
 
 class JobManager:
+    # 任务状态字典上限: 防止不同 URL 无限累积导致内存增长
+    MAX_JOBS = 100
+
     def __init__(self, checker_service: CheckerService):
         self.checker = checker_service
         self.jobs: Dict[str, JobStatus] = {} # Map URL -> Status
@@ -149,6 +161,14 @@ class JobManager:
                 
                 self.running_job_url = url
                 job = self.jobs[url]
+
+                # B2: 丢弃被新任务取代的残留旧任务。
+                # 提交新任务时会取消并覆盖同一 URL 的旧 job,但队列里可能残留旧任务;
+                # 若 request_id 不匹配,说明该任务已被更新的请求取代,直接丢弃。
+                task_request_id = task.get("request_id")
+                if task_request_id and job.request_id != task_request_id:
+                    print(f"[INFO] Dropping stale task for {url} (superseded by newer request).", flush=True)
+                    continue
                 
                 # Check if already cancelled
                 if job.status == "cancelled":
@@ -232,11 +252,22 @@ class JobManager:
         # 3. Create new job status
         job = JobStatus(url, request_id)
         self.jobs[url] = job
-        
+
+        # 4. 控制任务状态字典大小: 超过上限时淘汰最旧的已结束任务(防止内存增长)
+        if len(self.jobs) > self.MAX_JOBS:
+            stale = [k for k, j in self.jobs.items() if j.status in ("completed", "error", "cancelled", "unknown")]
+            for k in stale[: len(self.jobs) - self.MAX_JOBS]:
+                del self.jobs[k]
+            # 若仍超限(活跃任务过多),淘汰提交最早的
+            while len(self.jobs) > self.MAX_JOBS:
+                oldest_key = min(self.jobs, key=lambda k: self.jobs[k].submit_time)
+                del self.jobs[oldest_key]
+
         # Put dict instead of tuple to support extensible options
         await self.queue.put({
             "url": url, 
             "file_path": file_path,
-            "options": options or {}
+            "options": options or {},
+            "request_id": request_id,
         })
         print(f"[INFO] Job submitted for {url} (User: {user_ip})", flush=True)

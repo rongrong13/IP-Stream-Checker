@@ -126,5 +126,33 @@ class Config:
         except (ValueError, TypeError):
             return 7
 
+    @property
+    def alive_test(self) -> dict:
+        """节点测活配置(借鉴 subs-check: 用 Mihomo 内核并发测活,提前剔除不可用节点)。
+
+        返回 dict:
+            enabled:    是否启用测活(先测活,不可用节点不进入 IP/流媒体检测)
+            url:        测活探测地址(返回 2xx 即视为存活,如 generate_204)
+            timeout_ms: 单节点测活超时(毫秒)
+            dead_policy: 死节点处理策略:
+                        "skip"  = 跳过不检测,输出保留原名(默认)
+                        "remove" = 从输出订阅中移除
+        """
+        at = self._config.get("alive_test") or {}
+        return {
+            "enabled": bool(at.get("enabled", True)),
+            "url": at.get("url", "http://www.gstatic.com/generate_204"),
+            "timeout_ms": int(at.get("timeout_ms", 3000)),
+            "dead_policy": at.get("dead_policy", "skip"),
+        }
+
+    @property
+    def shuffle_test_order(self) -> bool:
+        """是否打乱节点测试顺序(借鉴 subs-check shuffle-test-order)。
+
+        只影响测试先后,输出订阅保持原序;可避免相邻节点在同一时间窗口扎堆测试。
+        """
+        return bool(self._config.get("shuffle_test_order", False))
+
 # Singleton instance
 config = Config()

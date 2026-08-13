@@ -9,7 +9,7 @@ FROM --platform=$TARGETPLATFORM metacubex/mihomo:v1.19.18 AS mihomo
 # 使用 BUILDPLATFORM(原生架构)运行,通过 GOARCH 交叉编译目标架构二进制,
 # 避免 QEMU 模拟编译(极慢)
 # ============================================================
-FROM --platform=$BUILDPLATFORM golang:latest AS mediatest-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS mediatest-builder
 
 WORKDIR /build
 # 使用国内 Go 模块代理(proxy.golang.org 在国内常无法访问)

@@ -58,3 +58,15 @@ stream_test:
   timeout: 90                      # 单节点流媒体检测超时(秒)
   conc: 20                         # Go 侧并发数(并行测试多个服务)
   node_label: true                 # 是否在节点名中追加解锁结果标注(如 🎬NF✓(US)·D+✗)
+
+# 节点测活(借鉴 subs-check): 正式检测前先用 Mihomo 内核并发测活,
+# 不可用节点不进入 IP/流媒体检测阶段,大幅加速大订阅
+alive_test:
+  enabled: true                    # 是否启用测活
+  url: "http://www.gstatic.com/generate_204"  # 测活探测地址(返回 2xx 即存活)
+  timeout_ms: 3000                 # 单节点测活超时(毫秒)
+  dead_policy: "skip"              # 死节点策略: skip=跳过不标注(输出保留原名) / remove=从输出移除
+
+# 是否打乱节点测试顺序(借鉴 subs-check shuffle-test-order)
+# 只影响测试先后,输出订阅保持原序;可避免同机场相邻节点扎堆在同一时间窗口测试
+shuffle_test_order: false

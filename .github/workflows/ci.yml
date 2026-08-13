@@ -32,18 +32,25 @@ jobs:
             core/config.py \
             core/clash_api.py \
             core/job_manager.py \
+            core/history.py \
             core/sources/base.py \
             core/sources/ping0.py \
             core/sources/ippure.py \
+            core/sources/ipapi.py \
             stream_tester/media_unlock.py
 
       - name: 安装 Python 依赖
         run: |
           pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir pytest
 
       - name: 核心模块导入检查
         run: |
           python -c "from core.config import config; print('config OK:', config.stream_test)"
+
+      - name: 单元测试(纯函数,不触网)
+        run: |
+          pytest tests/ -v
 
   docker-build:
     name: Docker 镜像构建

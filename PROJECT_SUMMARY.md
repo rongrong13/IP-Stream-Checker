@@ -48,7 +48,8 @@ IP-Stream-Checker/
 │                              #   生成"只含解锁成功项"的节点名摘要
 ├── mediatest/                 # MediaUnlockTest Go 源码(已加 -json/-providers 模式)
 ├── templates/index.html       # 自研 Web 面板(彩虹主题, 无外部 CDN)
-├── config.yaml                # 统一配置(数据源/流媒体开关/风险过滤阈值/保留天数)
+├── tests/                     # 单元测试(评分/格式化/缓存键/数据源顺序, 不触网, CI 跑 pytest)
+├── config.yaml                # 统一配置(数据源/流媒体开关/测活/风险过滤阈值/保留天数/打乱顺序)
 ├── Dockerfile                 # 多阶段: golang交叉编译mediatest → python+mihomo
 ├── docker-compose.yml
 └── data/                      # 运行数据(挂载卷): 结果yaml + 历史记录 + 缓存
@@ -68,7 +69,12 @@ IP-Stream-Checker/
 - **风险节点自动过滤**: Web 设置"去除风险度高于 X%"(0=关), 超阈值节点从 proxies 与 proxy-groups 一并移除
 - **检测历史记录**: 完成自动写入(最近50条), Web 左侧列表点击回看 YAML 结果; 结果文件按 `result_retention_days`(默认7天)自动清理
 - **Web 设置面板**: 数据源(ipapi/ping0/ippure)、降级、超时、ippure地址、流媒体服务多选开关、风险过滤阈值、保留天数 —— 全部写入 `config.yaml` 持久化
-- **队列/缓存**: MD5 去重缓存(`max_age` 秒)、任务复用、同 IP 限流、Request ID 防竞态
+- **队列/缓存**: 缓存键 = 订阅内容 + 检测选项(source/fallback/skip_keywords/风险阈值/流媒体服务) 的 MD5,
+  不同设置互不覆盖;任务复用、同 IP 限流、Request ID 防竞态、任务状态字典容量上限(100)、日志上限(200)
+- **节点测活**(借鉴 subs-check): 检测前用 Mihomo 内核并发测活(`GET /group/GLOBAL/delay?url=generate_204`),
+  不可用节点不进入 IP/流媒体检测;死节点策略 skip(跳过不标注)/remove(从输出移除)
+- **打乱测试顺序**(借鉴 subs-check shuffle-test-order): `shuffle_test_order` 开启后打乱测试先后,输出保持原序
+- **可选鉴权**: 环境变量 `API_TOKEN` 非空时启用,全部 API 校验 `Authorization: Bearer`(SSE 与 /check 订阅链接走 query token)
 
 ## 五、技术架构要点
 
@@ -90,16 +96,25 @@ IP-Stream-Checker/
 - **镜像**: 本地"镜像"目录下的 arm64 免构建 tar 包
 - **GitHub**: `https://github.com/rongrong13/IP-Stream-Checker`(默认分支 master, gh CLI 已登录可推送)
 
-## 七、已知问题(优化方向, 给 Zcode agent 的 TODO)
+## 七、已知问题与优化状态(供 Zcode agent 的 TODO)
 
-1. **★ ipapi 数据源完整链路容器实测待完成**: 评分逻辑已单测通过, 但"容器内走真实节点代理 → ip-api 返回 → 标注节点名"的端到端验证上次被中断, 需在真实订阅上跑一次确认
-2. **风险度是启发式推断值**(非精确第三方评分): 如需更精确, 可接入 IPQualityScore / AbuseIPDB(需免费注册 key, 前端加配置项)
-3. **ping0/ippure 数据源已失效**: 保留为可选但基本不可用, 可考虑移除或彻底修复(需过 Cloudflare, 成本高)
-4. **ip-api 免费版限速**(HTTP 约 45 次/分): 大订阅(>45节点)可能触发限流, 需加重试/退避或提示
-5. **流媒体检测耗时**: 每节点默认 7 服务约 10-30 秒; 节点多的订阅整体偏慢, 可优化并发或做结果缓存
-6. **前端可继续美化**: 当前彩虹主题为单页原生实现, 可扩展节点级详情展示、检测对比、导出报告等
-7. **共享设备数/原生广播**等 ping0 专属字段在 ipapi 源下缺失, 若需要可加 ipinfo.io 交叉补充
-8. 安全: `/check` 接受任意 URL 做代理(SSRF 面), 目前无鉴权, 若暴露公网需加访问控制
+> 2026-08-13 已完成的优化(详见 CHANGELOG 1.2.0): 缓存键冲突、取消竞态、SSE 悬挂、
+> 内存增长、降级白等失效源、节点测活(subs-check 借鉴)、打乱顺序、ip-api 限速重试与评分增强、
+> 可选 API_TOKEN 鉴权、依赖版本固定、单元测试(CI 跑 pytest)。
+
+1. **容器内测活/检测链路端到端验证待完成**: 测活接口 `GET /group/GLOBAL/delay` 已按 Mihomo API 实现,
+   但"容器内真实订阅端到端跑通"未验证(本地链路经路由器 OpenClash 结果不准,未实测)
+2. **风险度是启发式推断值**(非精确第三方评分): 如需更精确,可接入 IPQualityScore / AbuseIPDB(需免费注册 key,前端加配置项)
+3. **ping0/ippure 数据源已失效**: 已排除出自动降级池(不再白等超时),保留为手动可选;彻底修复需过 Cloudflare,成本高
+   - **不稳定的根因(已排查)**: ping0.cc 有 Cloudflare Turnstile 挑战 + HTML 正则解析(结构易碎);
+     scamalytics/ippure 同为"网页爬取式"源(亦有 CF 保护);JSON API 式源(ip-api)才稳定。
+     如需更高精度建议走第三方 API(见第 2 条),不建议再维护 HTML 爬取式源
+4. **ip-api 免费版限速**(HTTP 约 45 次/分): 已加 429 自动重试(退避 1s/2s);大订阅(>45节点)仍可能触发限流,可进一步做全局速率控制
+5. **流媒体检测耗时**: 每节点默认 7 服务约 10-30 秒;已用"测活前置"剔除死节点,但仍可按服务/结果做缓存进一步加速
+6. **前端可继续美化**: 可扩展节点级详情展示(风险/解锁明细表格)、检测对比、导出报告等
+7. **共享设备数/原生广播**等 ping0 专属字段在 ipapi 源下缺失,若需要可加 ipinfo.io 交叉补充
+8. 安全: `/check` 接受任意 URL 做代理(SSRF 面),已提供可选 `API_TOKEN` 鉴权(环境变量设置后全部 API 校验 Bearer),
+   若暴露公网请务必开启;SSE 与订阅链接走 query token
 
 ## 八、与 AI 编码代理(Zcode agent)的 GitHub 协作
 

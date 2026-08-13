@@ -192,6 +192,14 @@ footer { text-align: center; color: #30363d; padding: 20px 0; font-size: 12px; }
 
     <!-- 右: 主操作区 -->
     <section>
+      <!-- 访问令牌(启用 API_TOKEN 鉴权时显示) -->
+      <div id="auth-row" class="panel" style="display:none;">
+        <div class="panel-title"><span>🔑 访问令牌</span></div>
+        <div class="input-row">
+          <input id="auth-token" type="password" placeholder="输入 API_TOKEN 以访问 API(已保存在本机浏览器)" />
+          <button class="btn btn-ghost" onclick="saveAuthToken()" style="white-space:nowrap;">保存</button>
+        </div>
+      </div>
       <!-- 输入区 -->
       <div class="panel">
         <div class="input-row">
@@ -239,6 +247,25 @@ footer { text-align: center; color: #30363d; padding: 20px 0; font-size: 12px; }
             <div class="field">
               <label>结果保留天数(0=永久)</label>
               <input type="number" id="setting-retention" value="7" min="0" max="365" />
+            </div>
+            <div class="field check-line">
+              <label style="margin:0;white-space:nowrap;">节点测活(先剔除不可用节点)</label>
+              <input type="checkbox" id="setting-alive-enabled" checked />
+            </div>
+            <div class="field">
+              <label>测活超时(毫秒)</label>
+              <input type="number" id="setting-alive-timeout" value="3000" min="500" max="30000" />
+            </div>
+            <div class="field">
+              <label>死节点处理</label>
+              <select id="setting-alive-policy">
+                <option value="skip">跳过不检测(保留原名)</option>
+                <option value="remove">从输出订阅移除</option>
+              </select>
+            </div>
+            <div class="field check-line">
+              <label style="margin:0;white-space:nowrap;">打乱测试顺序(输出保持原序)</label>
+              <input type="checkbox" id="setting-shuffle" />
             </div>
             <div class="field check-line">
               <label style="margin:0;white-space:nowrap;">启用流媒体解锁检测</label>
@@ -289,6 +316,46 @@ let evtSource = null;
 let activeUrl = null;
 let activeRequestId = null;
 let logCount = 0; // 日志去重用
+let apiToken = localStorage.getItem('api_token') || '';
+
+// ============ 鉴权 ============
+// 服务端设置 API_TOKEN 环境变量后启用鉴权;未启用时这些封装与直接 fetch 等价。
+function authHeaders() {
+  return apiToken ? { 'Authorization': 'Bearer ' + apiToken } : {};
+}
+async function authFetch(url, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {}, authHeaders());
+  const res = await fetch(url, opts);
+  if (res.status === 401 && apiToken) {
+    // 令牌失效/错误: 提示并清空
+    apiToken = '';
+    localStorage.removeItem('api_token');
+    document.getElementById('auth-token').value = '';
+    addLog('访问令牌无效或已过期,请重新输入', 'error');
+    throw new Error('401 Unauthorized');
+  }
+  return res;
+}
+async function saveAuthToken() {
+  const v = document.getElementById('auth-token').value.trim();
+  if (!v) { alert('请输入访问令牌'); return; }
+  apiToken = v;
+  localStorage.setItem('api_token', v);
+  addLog('🔑 令牌已保存,重新加载数据...', 'info');
+  loadSettings();
+  loadHistory();
+}
+async function loadConfig() {
+  try {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    if (cfg.auth_required) {
+      document.getElementById('auth-row').style.display = '';
+      document.getElementById('auth-token').value = apiToken;
+    }
+  } catch (e) { /* 忽略: 面板可正常使用 */ }
+}
 
 // ============ 工具 ============
 function uuid() {
@@ -329,7 +396,7 @@ function setProgress(cur, total) {
 // ============ 加载设置 ============
 async function loadSettings() {
   try {
-    const res = await fetch('/api/settings');
+    const res = await authFetch('/api/settings');
     const s = await res.json();
     document.getElementById('setting-source').value = s.source || 'ping0';
     document.getElementById('setting-fallback').checked = !!s.fallback;
@@ -341,6 +408,10 @@ async function loadSettings() {
     document.getElementById('setting-retention').value = s.result_retention_days ?? 7;
     document.getElementById('setting-stream-enabled').checked = !!s.stream_test.enabled;
     document.getElementById('setting-stream-timeout').value = s.stream_test.timeout || 90;
+    document.getElementById('setting-alive-enabled').checked = !!(s.alive_test && s.alive_test.enabled);
+    document.getElementById('setting-alive-timeout').value = (s.alive_test && s.alive_test.timeout_ms) || 3000;
+    document.getElementById('setting-alive-policy').value = (s.alive_test && s.alive_test.dead_policy) || 'skip';
+    document.getElementById('setting-shuffle').checked = !!s.shuffle_test_order;
 
     // 流媒体服务开关
     const grid = document.getElementById('providers-grid');
@@ -373,6 +444,12 @@ async function saveSettings() {
     max_age: parseInt(document.getElementById('setting-max-age').value) || 0,
     filter_risk_threshold: parseInt(document.getElementById('setting-risk-filter').value) || 0,
     result_retention_days: parseInt(document.getElementById('setting-retention').value) || 7,
+    alive_test: {
+      enabled: document.getElementById('setting-alive-enabled').checked,
+      timeout_ms: parseInt(document.getElementById('setting-alive-timeout').value) || 3000,
+      dead_policy: document.getElementById('setting-alive-policy').value,
+    },
+    shuffle_test_order: document.getElementById('setting-shuffle').checked,
     stream_test: {
       enabled: document.getElementById('setting-stream-enabled').checked,
       providers: selected,
@@ -380,7 +457,7 @@ async function saveSettings() {
     }
   };
   try {
-    const res = await fetch('/api/settings', {
+    const res = await authFetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -422,9 +499,14 @@ async function startCheck() {
   if (riskFilter) params.append('filter_risk_threshold', riskFilter);
 
   try {
-    const res = await fetch('/check?' + params.toString());
+    const res = await authFetch('/check?' + params.toString());
+    if (res.status === 503) {
+      addLog('服务器繁忙: 检测队列已满,请稍后再试', 'error');
+      resetButtons();
+      return;
+    }
     if (res.status === 429) {
-      addLog('队列已满,请稍后再试', 'error');
+      addLog('检测任务已达上限(同一设备同时只允许一个任务),请先停止当前任务或稍后再试', 'error');
       resetButtons();
       return;
     }
@@ -442,7 +524,7 @@ async function startCheck() {
 async function stopCheck() {
   if (!activeUrl) return;
   try {
-    await fetch(`/cancel?url=${encodeURIComponent(activeUrl)}&request_id=${activeRequestId}`, { method: 'POST' });
+    await authFetch(`/cancel?url=${encodeURIComponent(activeUrl)}&request_id=${activeRequestId}`, { method: 'POST' });
     addLog('⏹️ 已发送停止请求...', 'cancelled');
   } catch (e) {
     console.error(e);
@@ -456,7 +538,10 @@ function resetButtons() {
 
 function connectStream(url) {
   if (evtSource) evtSource.close();
-  evtSource = new EventSource(`/status/stream?url=${encodeURIComponent(url)}`);
+  // EventSource 无法设置自定义 Header,已启用鉴权时通过 query 参数携带 token
+  let sseUrl = `/status/stream?url=${encodeURIComponent(url)}`;
+  if (apiToken) sseUrl += `&token=${encodeURIComponent(apiToken)}`;
+  evtSource = new EventSource(sseUrl);
   setBadge('检测中...', 'running');
 
   evtSource.onmessage = (e) => {
@@ -496,9 +581,10 @@ function connectStream(url) {
       if (st.status === 'completed') {
         setBadge('✅ 完成', 'done');
         addLog('✅ 检测完成!', 'result');
-        // 显示订阅链接 + 下载
-        const link = `${location.origin}/check?url=${encodeURIComponent(url)}`;
-        const dl = `${location.origin}/download?url=${encodeURIComponent(url)}`;
+        // 显示订阅链接 + 下载(启用鉴权时附带 token,可直接粘贴到 Clash 客户端)
+        const tokenSuffix = apiToken ? `&token=${encodeURIComponent(apiToken)}` : '';
+        const link = `${location.origin}/check?url=${encodeURIComponent(url)}${tokenSuffix}`;
+        const dl = `${location.origin}/download?url=${encodeURIComponent(url)}${tokenSuffix}`;
         document.getElementById('result-url').value = link;
         document.getElementById('download-btn').href = dl;
         document.getElementById('result-row').style.display = '';
@@ -527,7 +613,7 @@ function copyResult() {
 // ============ 历史记录 ============
 async function loadHistory() {
   try {
-    const res = await fetch('/api/history?limit=50');
+    const res = await authFetch('/api/history?limit=50');
     const data = await res.json();
     const list = document.getElementById('history-list');
     list.innerHTML = '';
@@ -556,7 +642,7 @@ async function showHistoryDetail(md5, el) {
 
   const detail = document.getElementById('history-detail');
   try {
-    const res = await fetch('/api/history/' + md5);
+    const res = await authFetch('/api/history/' + md5);
     if (!res.ok) { detail.innerHTML = '<div class="history-empty">记录不存在或已过期</div>'; detail.style.display = ''; return; }
     const data = await res.json();
     detail.innerHTML = `
@@ -570,6 +656,7 @@ async function showHistoryDetail(md5, el) {
 }
 
 // ============ 初始化 ============
+loadConfig();
 loadSettings();
 loadHistory();
 </script>

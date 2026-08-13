@@ -30,6 +30,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# ==================== 可选访问鉴权 ====================
+# 设置环境变量 API_TOKEN 后启用: 所有 API(除 /ipcheck 页面本身)要求
+# Authorization: Bearer <API_TOKEN>。未设置时完全不影响现有使用。
+# 用途: /check 会服务端拉取任意订阅 URL(SSRF 面)、/api/settings 可改全局配置,
+#       服务暴露公网时建议开启,防止陌生人白嫖/乱改。
+API_TOKEN = os.getenv("API_TOKEN", "").strip()
+if API_TOKEN:
+    print("[AUTH] API_TOKEN 已设置,API 访问需要 Authorization: Bearer 令牌", flush=True)
+
+def require_token(request: Request):
+    """FastAPI 依赖: 未启用鉴权或令牌正确时放行,否则 401。
+
+    SSE(EventSource) 无法设置自定义 Header,且复制给 Clash 客户端的订阅链接
+    也走 GET /check,故这两个路径额外允许通过 query 参数 token=... 鉴权。
+    """
+    if not API_TOKEN:
+        return
+    auth = request.headers.get("Authorization", "")
+    if auth == f"Bearer {API_TOKEN}":
+        return
+    if request.url.path in ("/status/stream", "/check") and request.query_params.get("token") == API_TOKEN:
+        return
+    raise HTTPException(status_code=401, detail="未授权: 需要有效的 API_TOKEN(Authorization: Bearer <token>)")
+
 
 def cleanup_old_results():
     """清理超过 result_retention_days 天的结果文件与失效的历史记录。
@@ -123,6 +147,30 @@ def calc_md5(content) -> str:
         content = content.encode('utf-8')
     return hashlib.md5(content).hexdigest()
 
+# 影响输出结果的检测选项集合(作为缓存键盐的一部分)。
+# 输出订阅会因这些选项不同而变化,若缓存键只按"订阅内容"计算,
+# 不同设置的请求会互相覆盖缓存结果(如 A 开了风险过滤、B 没开,得到同一份缓存)。
+CACHE_SALT_OPTIONS = ("source", "fallback", "skip_keywords", "filter_risk_threshold")
+
+def build_cache_key(content, options: dict) -> str:
+    """计算结果缓存键: 订阅内容 MD5 + 影响输出的检测选项摘要。
+
+    选项取"最终生效值"(请求参数优先,否则回落到 config),保证:
+    - 相同内容 + 相同设置 -> 命中缓存
+    - 相同内容 + 不同设置 -> 不同缓存文件,互不覆盖
+    """
+    if isinstance(content, str):
+        content = content.encode('utf-8')
+    salt = {
+        "source": options.get("source") or config.source,
+        "fallback": config.fallback if options.get("fallback") is None else bool(options["fallback"]),
+        "skip_keywords": options.get("skip_keywords") or config.skip_keywords,
+        "filter_risk_threshold": options.get("filter_risk_threshold", config.filter_risk_threshold),
+        "stream_providers": (config.stream_test or {}).get("providers", []),
+    }
+    salt_str = json.dumps(salt, ensure_ascii=False, sort_keys=True)
+    return hashlib.md5(content + f"|{salt_str}".encode("utf-8")).hexdigest()
+
 def is_in_time_cache(file_path: str, max_age_seconds=None) -> bool:
     """Checks if file modification time is within max_age."""
     if max_age_seconds is None:
@@ -171,18 +219,20 @@ def save_file_atomic(file_path: str, content: bytes):
 @app.get("/api/config")
 async def get_ui_config():
     """Exposes UI configuration based on environment variables or config.yaml."""
-    return {"show_advanced_settings": config.show_advanced_settings}
+    return {"show_advanced_settings": config.show_advanced_settings, "auth_required": bool(API_TOKEN)}
 
 # ==================== 检测历史记录 API ====================
 
 @app.get("/api/history")
-async def get_history(limit: int = Query(50, description="返回条数上限")):
+async def get_history(request: Request, limit: int = Query(50, description="返回条数上限")):
     """返回最近的检测历史记录列表。"""
+    require_token(request)
     return {"records": history_store.list(limit=limit)}
 
 @app.get("/api/history/{md5}")
-async def get_history_detail(md5: str):
+async def get_history_detail(request: Request, md5: str):
     """按 md5 返回某条历史记录的检测结果(YAML 文本)。"""
+    require_token(request)
     record = history_store.get(md5)
     if not record:
         raise HTTPException(status_code=404, detail="记录不存在")
@@ -200,8 +250,9 @@ async def get_history_detail(md5: str):
     }
 
 @app.delete("/api/history")
-async def clear_history():
+async def clear_history(request: Request):
     """清空检测历史。"""
+    require_token(request)
     history_store.clear()
     return {"status": "cleared"}
 
@@ -216,11 +267,13 @@ AVAILABLE_STREAM_PROVIDERS = [
 ]
 
 @app.get("/api/settings")
-async def get_settings():
+async def get_settings(request: Request):
     """返回 Web 可配置的设置项(数据源、流媒体开关等)。"""
+    require_token(request)
     st = config.stream_test
+    at = config.alive_test
     return {
-        "source": config.source,                     # 数据源: ping0 / ippure
+        "source": config.source,                     # 数据源: ipapi / ping0 / ippure
         "fallback": config.fallback,                 # 主源失败降级
         "request_timeout": config.request_timeout,   # IP 检测超时
         "check_url": config.check_url,               # ippure 数据源 API 地址
@@ -228,6 +281,13 @@ async def get_settings():
         "max_age": config.max_age,
         "filter_risk_threshold": config.filter_risk_threshold,   # 风险节点过滤阈值
         "result_retention_days": config.result_retention_days,   # 结果保留天数
+        "alive_test": {
+            "enabled": at["enabled"],
+            "url": at["url"],
+            "timeout_ms": at["timeout_ms"],
+            "dead_policy": at["dead_policy"],
+        },
+        "shuffle_test_order": config.shuffle_test_order,
         "stream_test": {
             "enabled": st["enabled"],
             "providers": st["providers"],
@@ -241,6 +301,7 @@ async def get_settings():
 @app.post("/api/settings")
 async def update_settings(request: Request):
     """保存 Web 设置(写回 config.yaml + 更新内存,下次检测生效)。"""
+    require_token(request)
     try:
         body = await request.json()
     except Exception:
@@ -269,6 +330,27 @@ async def update_settings(request: Request):
             config._config["result_retention_days"] = int(body["result_retention_days"])
         except (ValueError, TypeError):
             pass
+
+    # 节点测活设置
+    if "alive_test" in body and isinstance(body["alive_test"], dict):
+        at = body["alive_test"]
+        cur_at = config._config.get("alive_test") or {}
+        if "enabled" in at and isinstance(at["enabled"], bool):
+            cur_at["enabled"] = at["enabled"]
+        if "url" in at and isinstance(at["url"], str) and at["url"].strip():
+            cur_at["url"] = at["url"].strip()
+        if "timeout_ms" in at:
+            try:
+                cur_at["timeout_ms"] = int(at["timeout_ms"])
+            except (ValueError, TypeError):
+                pass
+        if "dead_policy" in at and at["dead_policy"] in ("skip", "remove"):
+            cur_at["dead_policy"] = at["dead_policy"]
+        config._config["alive_test"] = cur_at
+
+    # 打乱测试顺序
+    if "shuffle_test_order" in body and isinstance(body["shuffle_test_order"], bool):
+        config._config["shuffle_test_order"] = body["shuffle_test_order"]
 
     # 流媒体检测设置
     if "stream_test" in body and isinstance(body["stream_test"], dict):
@@ -318,8 +400,9 @@ async def update_settings(request: Request):
     return {"status": "saved"}
 
 @app.get("/api/status")
-async def get_status_json(url: str = Query(..., description="Subscription URL")):
+async def get_status_json(request: Request, url: str = Query(..., description="Subscription URL")):
     """Internal JSON status API."""
+    require_token(request)
     status = job_manager.get_status(url)
     q_info = job_manager.get_queue_info()
     
@@ -348,6 +431,7 @@ async def ip_check(
     filter_risk_threshold: int = Query(None, description="风险度超过该值的节点将被移除(0=不过滤)"),
     request_id: str = Query(None, description="Unique Request ID to prevent race conditions")
 ): 
+    require_token(request)
     try:
         # 0. Optimize: Unwrap Self-Referencing URL
         # e.g. http://my-site.com/check?url=http://... -> http://...
@@ -420,25 +504,15 @@ async def ip_check(
                 print(f"[WARN] Auto-conversion failed: {e}", flush=True)
 
 
-        # 3. Calc MD5 (of valid content)
-        md5_hash = calc_md5(content)
+        # 3. Calc Cache Key (内容 + 影响输出的检测选项,避免不同设置的请求互相覆盖缓存)
+        md5_hash = build_cache_key(content, options)
         file_name = f"{md5_hash}.yaml"
         file_path = os.path.join(DATA_DIR, file_name)
 
         # Update Map (URL -> Content Hash)
+        # 缓存键已包含检测选项(build_cache_key),不同设置的请求得到不同缓存文件,
+        # map 文件只记录 URL 最近一次对应的缓存文件,用于 /download 快速定位。
         url_hash = calc_md5(url)
-        # Note: Map file doesn't track options, so multiple configs for same URL share same map/hash?
-        # Actually file_name is hash of content, so content same = same file.
-        # But options might differ.
-        # If I change skip_keywords, output content changes.
-        # So caching based on INPUT CONTENT hash is slightly risky if output depends on runtime options.
-        # BUT: The input content (raw yaml) is what md5_hash is based on. 
-        # The output file overwrites this file.
-        # So if User A checks with keyword "A" and User B checks with keyword "B", 
-        # they might overwrite each other's cache if content is identical. (Race condition on cache).
-        # However, for this simplified system, we accept this risk or we'd need to salt the hash with options.
-        # Let's keep it simple: Cache is based on Source Content. Re-run overwrites.
-        
         map_path = os.path.join(DATA_DIR, f"{url_hash}.map")
         try:
             with open(map_path, 'w') as f:
@@ -510,14 +584,16 @@ async def ip_check(
         return PlainTextResponse(f"Error: {str(e)}", status_code=500)
 
 @app.post("/cancel")
-async def cancel_check(url: str = Query(..., description="Subscription URL to cancel"), request_id: str = Query(None)):
+async def cancel_check(request: Request, url: str = Query(..., description="Subscription URL to cancel"), request_id: str = Query(None)):
+    require_token(request)
     success = await job_manager.cancel_job(url, request_id)
     if success:
         return {"status": "cancelled"}
     return {"status": "not_found_or_ignored"}
 
 @app.get("/download")
-async def download_config(url: str):
+async def download_config(request: Request, url: str):
+    require_token(request)
     url_hash = calc_md5(url)
     map_path = os.path.join(DATA_DIR, f"{url_hash}.map")
     
@@ -536,7 +612,8 @@ async def download_config(url: str):
     return PlainTextResponse("File not found or expired. Please check again.", status_code=404)
 
 @app.get("/status/stream")
-async def stream_status(url: str = Query(..., description="Job URL")):
+async def stream_status(request: Request, url: str = Query(..., description="Job URL")):
+    require_token(request)
     async def event_generator():
         while True:
             # Keep alive / Heartbeat?
@@ -569,7 +646,7 @@ async def stream_status(url: str = Query(..., description="Job URL")):
                     })
                     yield f"data: {data}\n\n"
 
-            if status_data["status"] in ["completed", "error", "unknown"]:
+            if status_data["status"] in ["completed", "error", "cancelled", "unknown"]:
                 break
 
             await asyncio.sleep(1.0) # Keep 1s polling, but queue ensures no data loss
