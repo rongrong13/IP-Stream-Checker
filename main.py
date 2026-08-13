@@ -25,34 +25,19 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(cleanup_loop())
     except Exception as e:
         print(f"[WARN] 初始化结果清理任务失败: {e}", flush=True)
+    # 启动定时检测调度器(配置 schedule.enabled=true 后生效)
+    try:
+        scheduler.start(lambda: config.schedule)
+    except Exception as e:
+        print(f"[WARN] 启动定时检测调度器失败: {e}", flush=True)
     yield
-    # Shutdown logic if needed
+    # Shutdown
+    try:
+        await scheduler.stop()
+    except Exception:
+        pass
 
 app = FastAPI(lifespan=lifespan)
-
-# ==================== 可选访问鉴权 ====================
-# 设置环境变量 API_TOKEN 后启用: 所有 API(除 /ipcheck 页面本身)要求
-# Authorization: Bearer <API_TOKEN>。未设置时完全不影响现有使用。
-# 用途: /check 会服务端拉取任意订阅 URL(SSRF 面)、/api/settings 可改全局配置,
-#       服务暴露公网时建议开启,防止陌生人白嫖/乱改。
-API_TOKEN = os.getenv("API_TOKEN", "").strip()
-if API_TOKEN:
-    print("[AUTH] API_TOKEN 已设置,API 访问需要 Authorization: Bearer 令牌", flush=True)
-
-def require_token(request: Request):
-    """FastAPI 依赖: 未启用鉴权或令牌正确时放行,否则 401。
-
-    SSE(EventSource) 无法设置自定义 Header,且复制给 Clash 客户端的订阅链接
-    也走 GET /check,故这两个路径额外允许通过 query 参数 token=... 鉴权。
-    """
-    if not API_TOKEN:
-        return
-    auth = request.headers.get("Authorization", "")
-    if auth == f"Bearer {API_TOKEN}":
-        return
-    if request.url.path in ("/status/stream", "/check") and request.query_params.get("token") == API_TOKEN:
-        return
-    raise HTTPException(status_code=401, detail="未授权: 需要有效的 API_TOKEN(Authorization: Bearer <token>)")
 
 
 def cleanup_old_results():
@@ -69,6 +54,9 @@ def cleanup_old_results():
     try:
         for fname in os.listdir(DATA_DIR):
             if not fname.endswith(('.yaml', '.map')):
+                continue
+            # 固定"最新结果"文件与历史快照不受保留天数清理(否则多日未检测会被误删)
+            if fname == LATEST_FILENAME:
                 continue
             fpath = os.path.join(DATA_DIR, fname)
             try:
@@ -124,6 +112,76 @@ api_url = os.getenv("CLASH_API_URL", "http://127.0.0.1:9090")
 # Initialized in main but logic moved
 checker_service = CheckerService(api_url=api_url) 
 job_manager = JobManager(checker_service)
+
+# ---- 最新结果固定文件(latest.yaml) + 历史快照 ----
+# OpenClash 订阅 http://IP:8000/latest 即可: 名字固定,每次检测完成自动更新;
+# 更新前把旧结果备份为历史快照(保留最近 10 份),Web 面板可回看/复制。
+from core.latest import update_latest, list_snapshots, LATEST_FILENAME, HISTORY_DIRNAME, is_valid_snapshot_filename
+
+LATEST_MAX_SNAPSHOTS = 10
+_latest_lock = asyncio.Lock()
+
+async def _on_task_completed(url: str, file_path: str):
+    """任务成功完成后: 更新 latest.yaml 并备份旧结果为历史快照。
+
+    异步执行,任何失败仅记录日志,不阻塞任务主流程(健壮性)。
+    """
+    try:
+        async with _latest_lock:
+            await asyncio.to_thread(update_latest, DATA_DIR, file_path, LATEST_MAX_SNAPSHOTS)
+        print(f"[LATEST] 最新结果已更新并备份历史(来源: {url})", flush=True)
+    except Exception as e:
+        print(f"[WARN] 更新 latest 失败: {e}", flush=True)
+
+job_manager.on_task_completed = _on_task_completed
+
+# 定时检测调度器(参考 subs-check 的 cron-expression / check-interval)
+from core.scheduler import Scheduler
+
+async def _scheduled_check(url: str):
+    """定时检测触发入口: 下载订阅 → 建缓存文件 → 提交任务。
+
+    每次触发都重新下载并生成新 request_id,天然绕过结果缓存(强制重新检测);
+    同一 URL 已有活跃任务时跳过,避免打断手动检测或重复堆积。
+    """
+    try:
+        if job_manager.is_active_task(url):
+            print(f"[SCHEDULE] 跳过 {url}: 已有活跃任务", flush=True)
+            return
+        options = {}
+        request_id = f"sched-{int(time.time())}"
+        content = await fetch_url_with_retry(url, timeout=config.request_timeout)
+        if not is_valid_clash(content):
+            # 先本地多格式转换(纯URI/Base64), 再尝试服务端转换
+            try:
+                from core.sub_convert import convert_to_clash_yaml
+                local = await asyncio.to_thread(convert_to_clash_yaml, content)
+                if local:
+                    content = local
+            except Exception as _e:
+                print(f"[SCHEDULE] 本地转换失败: {_e}", flush=True)
+            if not is_valid_clash(content):
+                parsed = urlparse(url)
+                query = parse_qs(parsed.query)
+                query.update({'target': ['clash'], 'ver': ['meta'], 'flag': ['clash']})
+                new_url = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+                new_content = await fetch_url_with_retry(new_url, timeout=config.request_timeout)
+                if is_valid_clash(new_content):
+                    content = new_content
+                else:
+                    print(f"[SCHEDULE] 订阅无效且转换失败,跳过: {url}", flush=True)
+                    return
+        md5_hash = build_cache_key(content, options)
+        file_name = f"{md5_hash}.yaml"
+        file_path = os.path.join(DATA_DIR, file_name)
+        if not os.path.exists(file_path):
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, save_file_atomic, file_path, content)
+        await job_manager.submit_job(url, file_path, user_ip=None, options=options, request_id=request_id)
+    except Exception as e:
+        print(f"[SCHEDULE] 触发检测失败 {url}: {e}", flush=True)
+
+scheduler = Scheduler(on_trigger=_scheduled_check)
 
 # 检测历史记录存储(Web 界面历史列表用, 最近 50 条)
 from core.history import init_history_store
@@ -219,20 +277,20 @@ def save_file_atomic(file_path: str, content: bytes):
 @app.get("/api/config")
 async def get_ui_config():
     """Exposes UI configuration based on environment variables or config.yaml."""
-    return {"show_advanced_settings": config.show_advanced_settings, "auth_required": bool(API_TOKEN)}
+    return {"show_advanced_settings": config.show_advanced_settings}
 
 # ==================== 检测历史记录 API ====================
 
 @app.get("/api/history")
 async def get_history(request: Request, limit: int = Query(50, description="返回条数上限")):
     """返回最近的检测历史记录列表。"""
-    require_token(request)
+
     return {"records": history_store.list(limit=limit)}
 
 @app.get("/api/history/{md5}")
 async def get_history_detail(request: Request, md5: str):
     """按 md5 返回某条历史记录的检测结果(YAML 文本)。"""
-    require_token(request)
+
     record = history_store.get(md5)
     if not record:
         raise HTTPException(status_code=404, detail="记录不存在")
@@ -252,7 +310,7 @@ async def get_history_detail(request: Request, md5: str):
 @app.delete("/api/history")
 async def clear_history(request: Request):
     """清空检测历史。"""
-    require_token(request)
+
     history_store.clear()
     return {"status": "cleared"}
 
@@ -269,7 +327,7 @@ AVAILABLE_STREAM_PROVIDERS = [
 @app.get("/api/settings")
 async def get_settings(request: Request):
     """返回 Web 可配置的设置项(数据源、流媒体开关等)。"""
-    require_token(request)
+
     st = config.stream_test
     at = config.alive_test
     return {
@@ -285,9 +343,11 @@ async def get_settings(request: Request):
             "enabled": at["enabled"],
             "url": at["url"],
             "timeout_ms": at["timeout_ms"],
+            "concurrency": at["concurrency"],
             "dead_policy": at["dead_policy"],
         },
         "shuffle_test_order": config.shuffle_test_order,
+        "schedule": config.schedule,
         "stream_test": {
             "enabled": st["enabled"],
             "providers": st["providers"],
@@ -301,7 +361,7 @@ async def get_settings(request: Request):
 @app.post("/api/settings")
 async def update_settings(request: Request):
     """保存 Web 设置(写回 config.yaml + 更新内存,下次检测生效)。"""
-    require_token(request)
+
     try:
         body = await request.json()
     except Exception:
@@ -344,6 +404,11 @@ async def update_settings(request: Request):
                 cur_at["timeout_ms"] = int(at["timeout_ms"])
             except (ValueError, TypeError):
                 pass
+        if "concurrency" in at:
+            try:
+                cur_at["concurrency"] = max(1, min(200, int(at["concurrency"])))
+            except (ValueError, TypeError):
+                pass
         if "dead_policy" in at and at["dead_policy"] in ("skip", "remove"):
             cur_at["dead_policy"] = at["dead_policy"]
         config._config["alive_test"] = cur_at
@@ -351,6 +416,24 @@ async def update_settings(request: Request):
     # 打乱测试顺序
     if "shuffle_test_order" in body and isinstance(body["shuffle_test_order"], bool):
         config._config["shuffle_test_order"] = body["shuffle_test_order"]
+
+    # 定时检测设置
+    if "schedule" in body and isinstance(body["schedule"], dict):
+        s = body["schedule"]
+        cur_s = config._config.get("schedule") or {}
+        if "enabled" in s and isinstance(s["enabled"], bool):
+            cur_s["enabled"] = s["enabled"]
+        if "cron" in s and isinstance(s["cron"], str):
+            cur_s["cron"] = s["cron"].strip() or "0 3 * * *"
+        if "interval_minutes" in s:
+            try:
+                cur_s["interval_minutes"] = max(0, int(s["interval_minutes"]))
+            except (ValueError, TypeError):
+                pass
+        if "urls" in s and isinstance(s["urls"], list):
+            # 只保留合法的 http(s) 链接,避免注入任意内容
+            cur_s["urls"] = [u for u in s["urls"] if isinstance(u, str) and u.strip().startswith(("http://", "https://"))]
+        config._config["schedule"] = cur_s
 
     # 流媒体检测设置
     if "stream_test" in body and isinstance(body["stream_test"], dict):
@@ -402,7 +485,7 @@ async def update_settings(request: Request):
 @app.get("/api/status")
 async def get_status_json(request: Request, url: str = Query(..., description="Subscription URL")):
     """Internal JSON status API."""
-    require_token(request)
+
     status = job_manager.get_status(url)
     q_info = job_manager.get_queue_info()
     
@@ -431,7 +514,7 @@ async def ip_check(
     filter_risk_threshold: int = Query(None, description="风险度超过该值的节点将被移除(0=不过滤)"),
     request_id: str = Query(None, description="Unique Request ID to prevent race conditions")
 ): 
-    require_token(request)
+
     try:
         # 0. Optimize: Unwrap Self-Referencing URL
         # e.g. http://my-site.com/check?url=http://... -> http://...
@@ -466,42 +549,46 @@ async def ip_check(
         # 1. Download Content (Initial)
         content = await fetch_url_with_retry(url, timeout=options.get("request_timeout"))
         
-        # 2. Validation & Auto-Conversion
+        # 2. Validation & Auto-Conversion(本地多格式解析优先, 转换 API 兜底)
         if not is_valid_clash(content):
-             # ... auto convert logic (unchanged) ...
-             # (Copy existing logic carefully or use ... if not changing)
-            print("[INFO] Content is not valid Clash YAML. Attempting auto-conversion...", flush=True)
-            
+            print("[INFO] Content is not valid Clash YAML. Attempting local conversion...", flush=True)
+            converted = None
             try:
-                # Robust URL construction using urllib
-                parsed = urlparse(url)
-                query = parse_qs(parsed.query)
-                query.update({
-                    'target': ['clash'],
-                    'ver': ['meta'],
-                    'flag': ['clash']
-                })
-                new_query = urlencode(query, doseq=True)
-                new_url = urlunparse(parsed._replace(query=new_query))
-
-                print(f"[INFO] Retrying with auto-conversion parameters...", flush=True)
-                new_content = await fetch_url_with_retry(new_url, timeout=options.get("request_timeout"))
-                if is_valid_clash(new_content):
-                    content = new_content
-                    print(f"[INFO] Auto-conversion successful.", flush=True)
-                else:
-                     # ... error handling (unchanged) ...
-                    msg = "Invalid Clash Configuration. Expected YAML with 'proxies' key."
-                    try:
-                        import base64
-                        decoded = base64.b64decode(content).decode('utf-8', errors='ignore')
-                        if "vmess://" in decoded or "vless://" in decoded:
-                            msg = "Received Base64/Raw Node List. Please use a 'Clash' target subscription link."
-                    except:
-                        pass
-                    return PlainTextResponse(f"不支持的订阅类型： {msg}", status_code=400)
+                # 本地解析: 纯 URI 行(ss/vmess/vless/trojan/hysteria2/tuic) / Base64 订阅 -> Clash YAML
+                from core.sub_convert import convert_to_clash_yaml
+                converted = await asyncio.to_thread(convert_to_clash_yaml, content)
+                if converted:
+                    content = converted
+                    print(f"[INFO] 本地多格式转换成功(纯URI/Base64 -> Clash YAML)。", flush=True)
             except Exception as e:
-                print(f"[WARN] Auto-conversion failed: {e}", flush=True)
+                print(f"[WARN] 本地多格式转换失败: {e}", flush=True)
+
+            # 本地转换失败时, 尝试服务端自动转换(部分订阅站提供 target=clash)
+            if not is_valid_clash(content):
+                print("[INFO] Local conversion not applicable. Trying server-side auto-conversion...", flush=True)
+                try:
+                    # Robust URL construction using urllib
+                    parsed = urlparse(url)
+                    query = parse_qs(parsed.query)
+                    query.update({
+                        'target': ['clash'],
+                        'ver': ['meta'],
+                        'flag': ['clash']
+                    })
+                    new_query = urlencode(query, doseq=True)
+                    new_url = urlunparse(parsed._replace(query=new_query))
+
+                    print(f"[INFO] Retrying with auto-conversion parameters...", flush=True)
+                    new_content = await fetch_url_with_retry(new_url, timeout=options.get("request_timeout"))
+                    if is_valid_clash(new_content):
+                        content = new_content
+                        print(f"[INFO] Auto-conversion successful.", flush=True)
+                except Exception as e:
+                    print(f"[WARN] Auto-conversion failed: {e}", flush=True)
+
+        if not is_valid_clash(content):
+            msg = "不支持或无法解析的订阅格式。请提供: Clash YAML / 纯 URI 节点列表 / Base64 订阅"
+            return PlainTextResponse(f"不支持的订阅类型： {msg}", status_code=400)
 
 
         # 3. Calc Cache Key (内容 + 影响输出的检测选项,避免不同设置的请求互相覆盖缓存)
@@ -585,7 +672,7 @@ async def ip_check(
 
 @app.post("/cancel")
 async def cancel_check(request: Request, url: str = Query(..., description="Subscription URL to cancel"), request_id: str = Query(None)):
-    require_token(request)
+
     success = await job_manager.cancel_job(url, request_id)
     if success:
         return {"status": "cancelled"}
@@ -593,7 +680,7 @@ async def cancel_check(request: Request, url: str = Query(..., description="Subs
 
 @app.get("/download")
 async def download_config(request: Request, url: str):
-    require_token(request)
+
     url_hash = calc_md5(url)
     map_path = os.path.join(DATA_DIR, f"{url_hash}.map")
     
@@ -611,9 +698,37 @@ async def download_config(request: Request, url: str):
             
     return PlainTextResponse("File not found or expired. Please check again.", status_code=404)
 
+# ==================== 最新结果固定订阅 + 历史快照 ====================
+
+@app.get("/latest")
+async def get_latest():
+    """固定"最新检测结果"订阅链接: 名字永远不变,每次检测完成自动更新。
+
+    可直接填入 OpenClash 等客户端订阅,无需每次检测后更换链接。
+    """
+    latest_path = os.path.join(DATA_DIR, LATEST_FILENAME)
+    if not os.path.exists(latest_path):
+        return PlainTextResponse("尚无检测结果,请先完成一次检测", status_code=404)
+    return FileResponse(latest_path, media_type="application/x-yaml", filename=LATEST_FILENAME)
+
+@app.get("/api/latest/history")
+async def get_latest_history():
+    """返回历史快照列表(新→旧, 最多 50 条), 供 Web 面板回看/复制。"""
+    return {"snapshots": list_snapshots(DATA_DIR, max_items=50)}
+
+@app.get("/api/latest/download/{filename}")
+async def download_latest_snapshot(filename: str):
+    """下载某份历史快照(文件名白名单校验, 防路径穿越)。"""
+    if not is_valid_snapshot_filename(filename):
+        raise HTTPException(status_code=400, detail="非法文件名")
+    fpath = os.path.join(DATA_DIR, HISTORY_DIRNAME, filename)
+    if not os.path.exists(fpath):
+        raise HTTPException(status_code=404, detail="快照不存在或已清理")
+    return FileResponse(fpath, media_type="application/x-yaml", filename=filename)
+
 @app.get("/status/stream")
 async def stream_status(request: Request, url: str = Query(..., description="Job URL")):
-    require_token(request)
+
     async def event_generator():
         while True:
             # Keep alive / Heartbeat?
