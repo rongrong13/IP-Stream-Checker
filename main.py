@@ -247,7 +247,7 @@ async def update_settings(request: Request):
         raise HTTPException(status_code=400, detail="无效的 JSON")
 
     # 更新内存配置
-    if "source" in body and body["source"] in ("ping0", "ippure"):
+    if "source" in body and body["source"] in ("ping0", "ippure", "ipapi"):
         config._config["source"] = body["source"]
     if "fallback" in body and isinstance(body["fallback"], bool):
         config._config["fallback"] = body["fallback"]

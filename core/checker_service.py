@@ -51,13 +51,15 @@ class CheckerService:
         """
         from .sources.ippure import IPPureSource
         from .sources.ping0 import Ping0Source
+        from .sources.ipapi import IpApiSource
         
         options = options or {}
 
         # Initialize sources
         sources = {
             "ippure": IPPureSource(),
-            "ping0": Ping0Source()
+            "ping0": Ping0Source(),
+            "ipapi": IpApiSource()
         }
         
         # Determine Order from options or config

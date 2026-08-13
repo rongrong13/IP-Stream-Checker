@@ -63,7 +63,7 @@ class Config:
     def mixed_port(self): return self._config["mixed_port"]
 
     @property
-    def source(self): return self._config.get("source", "ping0")
+    def source(self): return self._config.get("source", "ipapi")
 
     @property
     def fallback(self): return self._config.get("fallback", True)

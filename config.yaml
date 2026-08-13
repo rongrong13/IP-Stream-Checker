@@ -20,8 +20,9 @@ skip_keywords:
 # 网络请求超时时间 秒
 request_timeout: 15
 
-# 优先数据源 (ping0 或 ippure), 默认 ping0
-source: "ping0"
+# 优先数据源 (ipapi / ping0 / ippure), 默认 ipapi
+# ipapi = ip-api.com 免费启发式(可靠,不被反爬拦截); ping0/ippure 常被 Cloudflare 拦截或失效
+source: "ipapi"
 
 # 是否允许降级 (True/False), 默认 True
 # True: 主源失败时尝试备用源
