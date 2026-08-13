@@ -101,7 +101,38 @@ IP-Stream-Checker/
 7. **共享设备数/原生广播**等 ping0 专属字段在 ipapi 源下缺失, 若需要可加 ipinfo.io 交叉补充
 8. 安全: `/check` 接受任意 URL 做代理(SSRF 面), 目前无鉴权, 若暴露公网需加访问控制
 
-## 八、快速命令
+## 八、与 AI 编码代理(Zcode agent)的 GitHub 协作
+
+> Zcode / Zed 的 agent 可以直接读取、修改、推送本仓库,本机凭据已全部就绪。
+
+**仓库信息**
+- GitHub: `https://github.com/rongrong13/IP-Stream-Checker`(默认分支 **master**)
+- 本地路径: `本地项目目录/IP-Stream-Checker`
+- git remote(SSH): `git@github.com:rongrong13/IP-Stream-Checker.git`
+
+**本机凭据(都已验证可用, 无需再配置)**
+- `gh` CLI 已登录账号 `rongrong13`(token 存系统钥匙串, 支持 `gh` 命令与 git HTTPS 凭据)
+- SSH key: `本机 SSH key` 已添加到 GitHub, `ssh -T git@github.com` 认证通过(推送免密)
+- git remote 使用 SSH 格式, `git push` 直接可用
+
+**Zcode 可执行的 GitHub 操作**
+```bash
+# 方式1: 直接打开本地项目
+zed 本地项目目录/IP-Stream-Checker
+
+# 方式2: 从 GitHub 克隆(全新环境)
+git clone git@github.com:rongrong13/IP-Stream-Checker.git
+
+# 改完提交推送(SSH 免密 / gh 凭据均可)
+git add -A && git commit -m "..." && git push origin master
+```
+
+**注意事项**
+- 主分支为 `master`(不是 main), 推送目标统一 `origin master`
+- 修改后请保持 `PROJECT_SUMMARY.md` 与 README 同步更新
+- 若 Zcode 需要调用 GitHub API(如开 PR / 查 issue), 用 `gh api`(已登录)即可
+
+## 九、快速命令
 
 ```bash
 # 本地构建+运行
